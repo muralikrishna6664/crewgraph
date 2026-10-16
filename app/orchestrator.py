@@ -110,4 +110,8 @@ def run_project(
                         queries.mark_bugs_fixed(graph, fixed_bug_ids)
                         break
 
+    if queries.can_release(graph, graph.name):
+        release_task = queries.create_release_task(graph, graph.name)
+        queries.complete_task(graph, release_task.properties["id"])
+
     return queries.project_task_statuses(graph)

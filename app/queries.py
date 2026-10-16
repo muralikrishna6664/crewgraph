@@ -534,3 +534,91 @@ def task_artifacts(graph: Graph) -> list[dict[str, object]]:
         }
         for row in result.result_set
     ]
+
+
+def approve_project(graph: Graph, project_id: str) -> Node:
+    """Record human approval for the selected project."""
+    result = graph.query(
+        """
+        MATCH (project:Project {id: $project_id})
+        MERGE (approval:Approval {id: $approval_id})
+        SET approval.status = 'approved',
+            approval.ts = timestamp()
+        MERGE (project)-[:APPROVES]->(approval)
+        RETURN approval
+        """,
+        {"project_id": project_id, "approval_id": f"{project_id}:approval"},
+    )
+    if not result.result_set:
+        raise ValueError(f"Project not found: {project_id}")
+    return result.result_set[0][0]
+
+
+def release_status(graph: Graph, project_id: str) -> dict[str, object]:
+    """Return whether release is allowed and a list of reasons if it is blocked."""
+    project_result = graph.ro_query(
+        "MATCH (project:Project {id: $project_id}) RETURN project",
+        {"project_id": project_id},
+    )
+    reasons: list[str] = []
+    if not project_result.result_set:
+        return {"can_release": False, "reasons": ["Project does not exist"]}
+
+    tasks = graph.ro_query("MATCH (task:Task) RETURN task").result_set
+    unfinished = [
+        row[0].properties
+        for row in tasks
+        if row[0].properties.get("status") != "done"
+    ]
+    if unfinished:
+        reasons.append(
+            "Tasks are not done: "
+            + ", ".join(str(task.get("id")) for task in unfinished)
+        )
+
+    open_bug_rows = graph.ro_query(
+        "MATCH (bug:Bug {status: 'open'}) RETURN bug"
+    ).result_set
+    if open_bug_rows:
+        reasons.append(
+            "Open bugs remain: "
+            + ", ".join(str(row[0].properties.get("id")) for row in open_bug_rows)
+        )
+
+    approvals = graph.ro_query(
+        """
+        MATCH (:Project {id: $project_id})-[:APPROVES]->
+              (approval:Approval {status: 'approved'})
+        RETURN approval
+        """,
+        {"project_id": project_id},
+    ).result_set
+    if not approvals:
+        reasons.append("Human approval is required")
+
+    return {"can_release": not reasons, "reasons": reasons}
+
+
+def can_release(graph: Graph, project_id: str) -> bool:
+    """Return true only when all tasks are done, bugs are closed, and approval exists."""
+    return bool(release_status(graph, project_id)["can_release"])
+
+
+def create_release_task(graph: Graph, project_id: str) -> Node:
+    """Create the final release task after the project passes its release gate."""
+    result = graph.query(
+        """
+        MATCH (project:Project {id: $project_id})
+        MERGE (task:Task {id: $task_id})
+        ON CREATE SET task.title = 'Release project',
+                      task.skill = 'release',
+                      task.status = 'ready',
+                      task.ts = timestamp()
+        MERGE (task)-[:PART_OF]->(project)
+        RETURN task
+        """,
+        {"project_id": project_id, "task_id": f"{project_id}:release"},
+    )
+    if not result.result_set:
+        raise ValueError(f"Project not found: {project_id}")
+    return result.result_set[0][0]

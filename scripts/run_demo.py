@@ -20,9 +20,17 @@ def main() -> None:
         action="store_true",
         help="make the mock backend accept an empty to-do title",
     )
+    parser.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help="approve the project and run the gated release task",
+    )
     args = parser.parse_args()
     os.environ["LLM_PROVIDER"] = "mock"
-    os.environ["DEMO_FLAW"] = "1" if args.flaw else "0"
+    if args.flaw:
+        os.environ["DEMO_FLAW"] = "1"
+    else:
+        os.environ.setdefault("DEMO_FLAW", "0")
     project_id = f"todo_demo_{uuid4().hex[:8]}"
     graph = init_project(project_id)
     queries.create_project(graph, project_id)
@@ -33,6 +41,15 @@ def main() -> None:
 
     print(f"Running demo project {project_id} in mock mode.")
     statuses = run_project(graph)
+    if args.auto_approve:
+        queries.approve_project(graph, project_id)
+        statuses = run_project(graph)
+    else:
+        gate = queries.release_status(graph, project_id)
+        if not gate["can_release"]:
+            print("Waiting for approval.")
+            for reason in gate["reasons"]:
+                print(f"- {reason}")
     for task in statuses:
         print(f"{task.properties['id']}: {task.properties['status']}")
     bugs = queries.open_bugs(graph)

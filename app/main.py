@@ -24,3 +24,20 @@ def task_context(project_id: str, task_id: str) -> dict[str, object]:
     if context is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return context
+
+
+@app.post("/projects/{project_id}/approve")
+def approve_project(project_id: str) -> dict[str, object]:
+    """Record human approval for a project's release."""
+    graph = get_graph(project_id)
+    try:
+        approval = queries.approve_project(graph, project_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"project_id": project_id, "status": approval.properties["status"]}
+
+
+@app.get("/projects/{project_id}/release-status")
+def project_release_status(project_id: str) -> dict[str, object]:
+    """Return the release gate status and all blocking reasons."""
+    return queries.release_status(get_graph(project_id), project_id)
