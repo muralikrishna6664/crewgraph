@@ -1,0 +1,1 @@
+"""CrewGraph application package."""
