@@ -7,8 +7,10 @@ from falkordb.graph import Graph
 from falkordb.node import Node
 
 from agents.backend import BackendAgent
+from agents.debugger import DebuggerAgent
 from agents.frontend import FrontendAgent
 from agents.runner import Agent
+from agents.tester import TesterAgent
 from agents.worker import run_task
 from app import queries
 
@@ -31,20 +33,12 @@ def run_project(
     available_agents = agents or [
         BackendAgent(),
         FrontendAgent(),
-        Agent(
-            name="tester",
-            role="Write tests for the project",
-            skills=["tester"],
-            system_prompt=(
-                "Generate task files. Create concise tests for the task using "
-                "dependency artifacts in handoff_context. Return JSON with a files "
-                "object mapping safe relative paths to complete file contents."
-            ),
-        ),
+        TesterAgent(),
     ]
     agents_by_skill = {
         skill: agent for agent in available_agents for skill in agent.skills
     }
+    debugger = DebuggerAgent()
 
     while True:
         claims: list[tuple[Agent, Node]] = []
@@ -74,5 +68,38 @@ def run_project(
             ]
             for future in futures:
                 future.result()
+
+        tester = agents_by_skill.get("tester")
+        if tester is not None:
+            for _, task in claims:
+                task_id = task.properties.get("id")
+                if not isinstance(task_id, str):
+                    continue
+                current_task = queries.get_task(graph, task_id)
+                if (
+                    current_task is None
+                    or current_task.properties.get("status") != "failed"
+                    or current_task.properties.get("skill") != "tester"
+                ):
+                    continue
+
+                for _ in range(2):
+                    fixed_bug_ids = debugger.repair_open_bugs(graph)
+                    if not fixed_bug_ids:
+                        break
+                    queries.prepare_task_retry(graph, task_id)
+                    claimed_task = queries.claim_task(
+                        graph, task_id, tester.name, lease_seconds
+                    )
+                    if claimed_task is None:
+                        raise RuntimeError(f"Could not re-claim repaired task: {task_id}")
+                    _run_with_own_graph(graph.name, tester, claimed_task)
+                    current_task = queries.get_task(graph, task_id)
+                    if (
+                        current_task is not None
+                        and current_task.properties.get("status") == "done"
+                    ):
+                        queries.mark_bugs_fixed(graph, fixed_bug_ids)
+                        break
 
     return queries.project_task_statuses(graph)

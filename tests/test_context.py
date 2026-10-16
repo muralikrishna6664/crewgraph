@@ -31,7 +31,14 @@ def test_task_context_endpoint_returns_dependency_evidence_and_lessons() -> None
         artifact = record_artifact(
             graph, "prerequisite", "backend-agent", "src/service.py", "source"
         )
-        record_bug(graph, "bug-1", artifact.properties["id"], "open")
+        record_bug(
+            graph,
+            "bug-1",
+            "Example bug",
+            "low",
+            artifact.properties["id"],
+            "open",
+        )
         record_vulnerability(
             graph,
             "vulnerability-1",

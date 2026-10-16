@@ -62,6 +62,11 @@ def run_task(graph: Graph, agent: Agent, task: Node | dict[str, object]) -> list
     ):
         raise ValueError(f"Task {task_id} has no API contract artifact in its context")
 
+    if skill == "tester":
+        from agents.tester import test_task
+
+        return test_task(graph, agent, properties, context)
+
     response = agent.run({"task": properties, "handoff_context": context})
     try:
         payload = json.loads(response.text)
@@ -79,7 +84,11 @@ def run_task(graph: Graph, agent: Agent, task: Node | dict[str, object]) -> list
         destination = _workspace_path(project_id, relative_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(content, encoding="utf-8")
-        kind = "api_contract" if Path(relative_path).name == "API_CONTRACT.md" else skill
+        kind = (
+            "api_contract"
+            if Path(relative_path).name == "API_CONTRACT.json"
+            else skill
+        )
         queries.record_artifact(
             graph,
             task_id,

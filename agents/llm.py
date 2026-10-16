@@ -39,12 +39,31 @@ MOCK_DAG = {
     ]
 }
 
-MOCK_API_CONTRACT = """# To-do API contract
-
-- `GET /api/todos` returns a JSON array of to-do objects.
-- `POST /api/todos` accepts `{"title": "..."}` and returns the created to-do.
-- `PATCH /api/todos/{id}` updates a to-do's `completed` value.
-"""
+MOCK_API_CONTRACT = {
+    "endpoints": [
+        {"method": "GET", "path": "/todos", "expected_status": 200},
+        {
+            "method": "POST",
+            "path": "/todos",
+            "expected_status": 201,
+            "json": {"title": "Buy milk"},
+            "capture_id": True,
+        },
+        {
+            "method": "DELETE",
+            "path": "/todos/{id}",
+            "expected_status": 204,
+            "use_captured_id": True,
+        },
+        {
+            "method": "POST",
+            "path": "/todos",
+            "expected_status": 422,
+            "json": {"title": ""},
+            "invalid": True,
+        },
+    ]
+}
 
 
 def _estimate_tokens(text: str) -> int:
@@ -58,6 +77,42 @@ def call(system: str, user: str) -> LLMResponse:
     model = os.getenv("LLM_MODEL", "mock-dag")
 
     if provider == "mock":
+        if "Repair generated file" in system:
+            fixed_backend = (
+                "from fastapi import FastAPI, HTTPException\n"
+                "from fastapi.responses import Response\n"
+                "from pydantic import BaseModel\n\n"
+                "app = FastAPI(title='CrewGraph To-do API')\n"
+                "todos = []\n"
+                "next_id = 1\n\n"
+                "class TodoInput(BaseModel):\n"
+                "    title: str\n\n"
+                "@app.get('/todos')\n"
+                "def list_todos():\n"
+                "    return todos\n\n"
+                "@app.post('/todos', status_code=201)\n"
+                "def create_todo(item: TodoInput):\n"
+                "    global next_id\n"
+                "    if not item.title.strip():\n"
+                "        raise HTTPException(status_code=422, detail='title must not be empty')\n"
+                "    todo = {'id': next_id, 'title': item.title, 'completed': False}\n"
+                "    next_id += 1\n"
+                "    todos.append(todo)\n"
+                "    return todo\n\n"
+                "@app.delete('/todos/{todo_id}', status_code=204)\n"
+                "def delete_todo(todo_id: int):\n"
+                "    for index, todo in enumerate(todos):\n"
+                "        if todo['id'] == todo_id:\n"
+                "            todos.pop(index)\n"
+                "            return Response(status_code=204)\n"
+                "    raise HTTPException(status_code=404, detail='todo not found')\n"
+            )
+            return LLMResponse(
+                json.dumps({"files": {"main.py": fixed_backend}}),
+                _estimate_tokens(f"{system}\n{user}"),
+                _estimate_tokens(fixed_backend),
+            )
+
         if "Generate task files" in system:
             try:
                 context = json.loads(user)
@@ -68,20 +123,40 @@ def call(system: str, user: str) -> LLMResponse:
 
             if skill == "backend":
                 files = {
-                    "API_CONTRACT.md": MOCK_API_CONTRACT,
-                    "app/todo_api.py": (
-                        "from fastapi import FastAPI\n\n"
-                        "app = FastAPI()\n"
-                        "todos = []\n\n"
-                        "@app.get('/api/todos')\n"
+                    "API_CONTRACT.json": json.dumps(MOCK_API_CONTRACT, indent=2),
+                    "main.py": (
+                        "import os\n"
+                        "from fastapi import FastAPI, HTTPException\n"
+                        "from fastapi.responses import JSONResponse, Response\n"
+                        "from pydantic import BaseModel\n\n"
+                        "app = FastAPI(title='CrewGraph To-do API')\n"
+                        "todos = []\n"
+                        "next_id = 1\n\n"
+                        "class TodoInput(BaseModel):\n"
+                        "    title: str\n\n"
+                        "@app.get('/todos')\n"
                         "def list_todos():\n"
                         "    return todos\n\n"
-                        "@app.post('/api/todos')\n"
-                        "def add_todo(item: dict):\n"
-                        "    todo = {'id': len(todos) + 1, 'title': item['title'], "
+                        "@app.post('/todos', status_code=201)\n"
+                        "def create_todo(item: TodoInput):\n"
+                        "    global next_id\n"
+                        "    if not item.title.strip() and os.getenv('DEMO_FLAW') != '1':\n"
+                        "        raise HTTPException(status_code=422, "
+                        "detail='title must not be empty')\n"
+                        "    todo = {'id': next_id, 'title': item.title, "
                         "'completed': False}\n"
+                        "    next_id += 1\n"
                         "    todos.append(todo)\n"
-                        "    return todo\n"
+                        "    if not item.title.strip() and os.getenv('DEMO_FLAW') == '1':\n"
+                        "        return JSONResponse(status_code=200, content=todo)\n"
+                        "    return todo\n\n"
+                        "@app.delete('/todos/{todo_id}', status_code=204)\n"
+                        "def delete_todo(todo_id: int):\n"
+                        "    for index, todo in enumerate(todos):\n"
+                        "        if todo['id'] == todo_id:\n"
+                        "            todos.pop(index)\n"
+                        "            return Response(status_code=204)\n"
+                        "    raise HTTPException(status_code=404, detail='todo not found')\n"
                     ),
                 }
             elif skill == "frontend":
@@ -106,7 +181,7 @@ def call(system: str, user: str) -> LLMResponse:
                         "<ul id=\"todos\"></ul>\n<script>\n"
                         "const list = document.querySelector('#todos');\n"
                         "async function loadTodos() {\n"
-                        "  const response = await fetch('/api/todos');\n"
+                        "  const response = await fetch('/todos');\n"
                         "  const todos = await response.json();\n"
                         "  list.replaceChildren(...todos.map(todo => {\n"
                         "    const item = document.createElement('li');\n"
@@ -116,7 +191,7 @@ def call(system: str, user: str) -> LLMResponse:
                         "}\n"
                         "document.querySelector('#new-todo').onsubmit = async event => {\n"
                         "  event.preventDefault();\n"
-                        "  await fetch('/api/todos', {method: 'POST', "
+                        "  await fetch('/todos', {method: 'POST', "
                         "headers: {'Content-Type': 'application/json'}, "
                         "body: JSON.stringify({title: document.querySelector('#title').value})});\n"
                         "  await loadTodos();\n"
@@ -129,8 +204,8 @@ def call(system: str, user: str) -> LLMResponse:
                         "def test_todo_api_contract_has_required_endpoints():\n"
                         "    from pathlib import Path\n"
                         "    contract = Path('API_CONTRACT.md').read_text()\n"
-                        "    assert 'GET /api/todos' in contract\n"
-                        "    assert 'POST /api/todos' in contract\n"
+                        "    assert 'GET' in contract\n"
+                        "    assert '/todos' in contract\n"
                     )
                 }
             else:
