@@ -11,6 +11,7 @@ from agents.backend import BackendAgent
 from agents.debugger import DebuggerAgent
 from agents.frontend import FrontendAgent
 from agents.runner import Agent
+from agents.security import SecurityAgent
 from agents.tester import TesterAgent
 from agents.worker import run_task
 from app import queries
@@ -35,6 +36,7 @@ def run_project(
         BackendAgent(),
         FrontendAgent(),
         TesterAgent(),
+        SecurityAgent(),
     ]
     agents_by_skill = {
         skill: agent for agent in available_agents for skill in agent.skills
@@ -71,18 +73,22 @@ def run_project(
             for future in futures:
                 future.result()
 
-        tester = agents_by_skill.get("tester")
-        if tester is not None:
+        if agents_by_skill:
             for _, task in claims:
                 task_id = task.properties.get("id")
+                task_skill = task.properties.get("skill")
                 if not isinstance(task_id, str):
                     continue
                 current_task = queries.get_task(graph, task_id)
                 if (
                     current_task is None
                     or current_task.properties.get("status") != "failed"
-                    or current_task.properties.get("skill") != "tester"
+                    or current_task.properties.get("skill")
+                    not in ("tester", "security")
                 ):
+                    continue
+                repair_agent = agents_by_skill.get(task_skill)
+                if repair_agent is None:
                     continue
 
                 for _ in range(2):
@@ -91,11 +97,11 @@ def run_project(
                         break
                     queries.prepare_task_retry(graph, task_id)
                     claimed_task = queries.claim_task(
-                        graph, task_id, tester.name, lease_seconds
+                        graph, task_id, repair_agent.name, lease_seconds
                     )
                     if claimed_task is None:
                         raise RuntimeError(f"Could not re-claim repaired task: {task_id}")
-                    _run_with_own_graph(graph.name, tester, claimed_task)
+                    _run_with_own_graph(graph.name, repair_agent, claimed_task)
                     current_task = queries.get_task(graph, task_id)
                     if (
                         current_task is not None

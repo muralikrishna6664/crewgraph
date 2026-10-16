@@ -9,12 +9,12 @@ from app import queries
 from app.orchestrator import run_project
 
 
-@pytest.mark.parametrize("flaw", [False, True])
+@pytest.mark.parametrize("flaw", ["0", "1", "security"])
 def test_mock_orchestrator_runs_real_http_checks(
-    monkeypatch, tmp_path, flaw: bool
+    monkeypatch, tmp_path, flaw: str
 ) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "mock")
-    monkeypatch.setenv("DEMO_FLAW", "1" if flaw else "0")
+    monkeypatch.setenv("DEMO_FLAW", flaw)
     monkeypatch.setattr(
         "agents.worker.WORKSPACE_ROOT", tmp_path / "workspace"
     )
@@ -42,13 +42,14 @@ def test_mock_orchestrator_runs_real_http_checks(
 
         final_tasks = run_project(graph)
 
-        assert len(final_tasks) == 3
+        assert len(final_tasks) == 4
         statuses = {task.properties["id"]: task.properties["status"] for task in final_tasks}
-        if flaw:
+        if flaw == "1":
             assert statuses == {
                 "todo-api": "done",
                 "todo-page": "done",
                 "todo-tests": "done",
+                "todo-security": "done",
             }
         else:
             assert set(statuses.values()) == {"done"}
@@ -65,10 +66,10 @@ def test_mock_orchestrator_runs_real_http_checks(
             for item in artifacts
         )
         bugs = queries.open_bugs(graph)
-        if flaw:
+        if flaw != "0":
             assert debugger_calls == [graph_name]
             all_bugs = queries.bugs(graph)
-            assert queries.count_bugs(graph) >= 1
+            assert queries.count_bugs(graph) >= (2 if flaw == "security" else 1)
             assert all(bug["bug"]["status"] == "fixed" for bug in all_bugs)
             assert bugs == []
             assert all(bug["artifact"]["kind"] == "backend" for bug in all_bugs)
@@ -80,6 +81,10 @@ def test_mock_orchestrator_runs_real_http_checks(
                 for bug in all_bugs
                 for fixed in queries.bug_fix_artifacts(graph, bug["bug"]["id"])
             )
+            if flaw == "security":
+                assert all(bug["bug"]["kind"] == "security" for bug in all_bugs)
+                assert all(isinstance(bug["bug"].get("line"), int) for bug in all_bugs)
+                assert all(bug["bug"].get("fix_suggestion") for bug in all_bugs)
         else:
             assert debugger_calls == []
             assert bugs == []

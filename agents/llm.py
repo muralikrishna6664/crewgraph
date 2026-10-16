@@ -36,6 +36,12 @@ MOCK_DAG = {
             "skill": "tester",
             "depends_on": ["todo-api", "todo-page"],
         },
+        {
+            "id": "todo-security",
+            "title": "Scan the generated app for security issues",
+            "skill": "security",
+            "depends_on": ["todo-api", "todo-page", "todo-tests"],
+        },
     ]
 }
 
@@ -122,6 +128,7 @@ def call(system: str, user: str) -> LLMResponse:
                 raise ValueError("Mock worker requires task context with a skill") from error
 
             if skill == "backend":
+                security_flaw = os.getenv("DEMO_FLAW") == "security"
                 files = {
                     "API_CONTRACT.json": json.dumps(MOCK_API_CONTRACT, indent=2),
                     "main.py": (
@@ -159,6 +166,18 @@ def call(system: str, user: str) -> LLMResponse:
                         "    raise HTTPException(status_code=404, detail='todo not found')\n"
                     ),
                 }
+                if security_flaw:
+                    files["main.py"] = files["main.py"].replace(
+                        "from fastapi.responses import JSONResponse, Response\n",
+                        "from fastapi.responses import JSONResponse, Response\n"
+                        "from fastapi.middleware.cors import CORSMiddleware\n"
+                        "SECRET_API_KEY = 'crewgraph-demo-fake-key-123456'\n",
+                    ).replace(
+                        "app = FastAPI(title='CrewGraph To-do API')\n",
+                        "app = FastAPI(title='CrewGraph To-do API')\n"
+                        "app.add_middleware(CORSMiddleware, allow_origins=['*'], "
+                        "allow_methods=['*'], allow_headers=['*'])\n",
+                    )
             elif skill == "frontend":
                 context_data = context.get("handoff_context", {})
                 artifacts = context_data.get("artifacts", [])

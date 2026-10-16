@@ -274,6 +274,20 @@ def count_bugs(graph: Graph) -> int:
     return int(result.result_set[0][0]) if result.result_set else 0
 
 
+def artifact_for_path(graph: Graph, path: str) -> Node | None:
+    """Return the latest artifact recorded for a project file path."""
+    result = graph.ro_query(
+        """
+        MATCH (artifact:Artifact {path: $path})
+        RETURN artifact
+        ORDER BY artifact.ts DESC
+        LIMIT 1
+        """,
+        {"path": path},
+    )
+    return result.result_set[0][0] if result.result_set else None
+
+
 def fail_task(graph: Graph, task_id: str, reason: str) -> Node:
     """Mark a task failed and store the reason it could not pass."""
     result = graph.query(

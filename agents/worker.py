@@ -66,6 +66,12 @@ def run_task(graph: Graph, agent: Agent, task: Node | dict[str, object]) -> list
         from agents.tester import test_task
 
         return test_task(graph, agent, properties, context)
+    if skill == "security":
+        from agents.security import SecurityAgent
+
+        if not isinstance(agent, SecurityAgent):
+            raise ValueError("Security tasks require the static SecurityAgent")
+        return agent.scan_task(graph, properties)
 
     response = agent.run({"task": properties, "handoff_context": context})
     try:

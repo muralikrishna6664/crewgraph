@@ -14,7 +14,7 @@ def test_mock_provider_returns_canned_dag_and_token_counts(monkeypatch) -> None:
 
     response = call("Plan tasks", "Build a to-do app")
 
-    assert len(json.loads(response.text)["tasks"]) == 3
+    assert len(json.loads(response.text)["tasks"]) == 4
     assert response.input_tokens > 0
     assert response.output_tokens > 0
 
@@ -53,8 +53,8 @@ def test_mock_planner_writes_valid_dag_to_temporary_graph(monkeypatch) -> None:
         tasks = Planner().plan(
             "Build a to-do app with a REST API and a simple web page", graph
         )
-        assert len(tasks) == 3
-        assert len({task["id"] for task in tasks}) == 3
+        assert len(tasks) == 4
+        assert len({task["id"] for task in tasks}) == len(tasks)
 
         ready = ready_tasks(graph)
         assert {task.properties["id"] for task in ready} == {"todo-api"}
