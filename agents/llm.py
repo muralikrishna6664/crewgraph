@@ -39,6 +39,13 @@ MOCK_DAG = {
     ]
 }
 
+MOCK_API_CONTRACT = """# To-do API contract
+
+- `GET /api/todos` returns a JSON array of to-do objects.
+- `POST /api/todos` accepts `{"title": "..."}` and returns the created to-do.
+- `PATCH /api/todos/{id}` updates a to-do's `completed` value.
+"""
+
 
 def _estimate_tokens(text: str) -> int:
     """Estimate tokens for mock responses without requiring a tokenizer."""
@@ -51,7 +58,86 @@ def call(system: str, user: str) -> LLMResponse:
     model = os.getenv("LLM_MODEL", "mock-dag")
 
     if provider == "mock":
-        text = json.dumps(MOCK_DAG)
+        if "Generate task files" in system:
+            try:
+                context = json.loads(user)
+                task = context["task"]
+                skill = task["skill"]
+            except (json.JSONDecodeError, KeyError, TypeError) as error:
+                raise ValueError("Mock worker requires task context with a skill") from error
+
+            if skill == "backend":
+                files = {
+                    "API_CONTRACT.md": MOCK_API_CONTRACT,
+                    "app/todo_api.py": (
+                        "from fastapi import FastAPI\n\n"
+                        "app = FastAPI()\n"
+                        "todos = []\n\n"
+                        "@app.get('/api/todos')\n"
+                        "def list_todos():\n"
+                        "    return todos\n\n"
+                        "@app.post('/api/todos')\n"
+                        "def add_todo(item: dict):\n"
+                        "    todo = {'id': len(todos) + 1, 'title': item['title'], "
+                        "'completed': False}\n"
+                        "    todos.append(todo)\n"
+                        "    return todo\n"
+                    ),
+                }
+            elif skill == "frontend":
+                context_data = context.get("handoff_context", {})
+                artifacts = context_data.get("artifacts", [])
+                contracts = [
+                    artifact.get("content", "")
+                    for artifact in artifacts
+                    if artifact.get("kind") == "api_contract"
+                    and artifact.get("content")
+                ]
+                if not contracts:
+                    raise ValueError(
+                        "Mock frontend requires an API contract from handoff context"
+                    )
+                files = {
+                    "dashboard/index.html": (
+                        "<!doctype html>\n"
+                        "<html><head><title>To-do</title></head><body>\n"
+                        "<h1>To-do list</h1><form id=\"new-todo\">"
+                        "<input id=\"title\" required><button>Add</button></form>\n"
+                        "<ul id=\"todos\"></ul>\n<script>\n"
+                        "const list = document.querySelector('#todos');\n"
+                        "async function loadTodos() {\n"
+                        "  const response = await fetch('/api/todos');\n"
+                        "  const todos = await response.json();\n"
+                        "  list.replaceChildren(...todos.map(todo => {\n"
+                        "    const item = document.createElement('li');\n"
+                        "    item.textContent = todo.title;\n"
+                        "    return item;\n"
+                        "  }));\n"
+                        "}\n"
+                        "document.querySelector('#new-todo').onsubmit = async event => {\n"
+                        "  event.preventDefault();\n"
+                        "  await fetch('/api/todos', {method: 'POST', "
+                        "headers: {'Content-Type': 'application/json'}, "
+                        "body: JSON.stringify({title: document.querySelector('#title').value})});\n"
+                        "  await loadTodos();\n"
+                        "};\nloadTodos();\n</script></body></html>\n"
+                    )
+                }
+            elif skill == "tester":
+                files = {
+                    "tests/test_todo_api.py": (
+                        "def test_todo_api_contract_has_required_endpoints():\n"
+                        "    from pathlib import Path\n"
+                        "    contract = Path('API_CONTRACT.md').read_text()\n"
+                        "    assert 'GET /api/todos' in contract\n"
+                        "    assert 'POST /api/todos' in contract\n"
+                    )
+                }
+            else:
+                raise ValueError(f"No mock files are configured for skill: {skill}")
+            text = json.dumps({"files": files})
+        else:
+            text = json.dumps(MOCK_DAG)
         return LLMResponse(
             text,
             _estimate_tokens(f"{system}\n{user}"),

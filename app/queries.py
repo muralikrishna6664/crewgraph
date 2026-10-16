@@ -5,9 +5,14 @@ from falkordb.node import Node
 
 
 def record_artifact(
-    graph: Graph, task_id: str, agent: str, path: str, kind: str
+    graph: Graph,
+    task_id: str,
+    agent: str,
+    path: str,
+    kind: str,
+    content: str = "",
 ) -> Node:
-    """Create or update an artifact and link it to its task and producing agent."""
+    """Create or update an artifact with its content and task and producer links."""
     artifact_id = f"{task_id}:{path}"
     result = graph.query(
         """
@@ -16,7 +21,8 @@ def record_artifact(
         MERGE (artifact:Artifact {id: $artifact_id})
         ON CREATE SET artifact.ts = timestamp()
         SET artifact.path = $path,
-            artifact.kind = $kind
+            artifact.kind = $kind,
+            artifact.content = $content
         MERGE (artifact)-[:FOR_TASK]->(task)
         MERGE (artifact)-[:PRODUCED_BY]->(agent)
         RETURN artifact
@@ -27,6 +33,7 @@ def record_artifact(
             "artifact_id": artifact_id,
             "path": path,
             "kind": kind,
+            "content": content,
         },
     )
     if not result.result_set:
@@ -303,3 +310,29 @@ def complete_task(graph: Graph, task_id: str) -> Node | None:
         """
     )
     return result.result_set[0][0]
+
+
+def project_task_statuses(graph: Graph) -> list[Node]:
+    """Return each task in the selected project graph with its current status."""
+    result = graph.ro_query("MATCH (task:Task) RETURN task ORDER BY task.id")
+    return [row[0] for row in result.result_set]
+
+
+def task_artifacts(graph: Graph) -> list[dict[str, object]]:
+    """Return task artifacts and the names of the agents that produced them."""
+    result = graph.ro_query(
+        """
+        MATCH (artifact:Artifact)-[:FOR_TASK]->(task:Task)
+        OPTIONAL MATCH (artifact)-[:PRODUCED_BY]->(agent:Agent)
+        RETURN task, artifact, collect(DISTINCT agent) AS agents
+        ORDER BY task.id, artifact.path
+        """
+    )
+    return [
+        {
+            "task": row[0].properties,
+            "artifact": row[1].properties,
+            "agents": [agent.properties.get("name") for agent in row[2]],
+        }
+        for row in result.result_set
+    ]
