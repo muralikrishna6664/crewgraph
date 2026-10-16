@@ -224,6 +224,35 @@ def prepare_task_retry(graph: Graph, task_id: str) -> Node:
     return result.result_set[0][0]
 
 
+def recover_expired_leases(graph: Graph, now: int) -> list[Node]:
+    """Return expired claimed tasks to ready and clear their claim fields."""
+    result = graph.query(
+        """
+        MATCH (task:Task)
+        WHERE task.status = 'claimed'
+          AND task.lease_until <= $now
+          AND task.status <> 'done'
+        SET task.status = 'ready',
+            task.failure_reason = 'Recovered expired lease'
+        REMOVE task.claimed_by, task.lease_until
+        RETURN task
+        """,
+        {"now": now},
+    )
+    return [row[0] for row in result.result_set]
+
+
+def set_task_lease_until(graph: Graph, task_id: str, lease_until: int) -> None:
+    """Set a task lease timestamp for recovery checks and controlled testing."""
+    graph.query(
+        """
+        MATCH (task:Task {id: $task_id})
+        SET task.lease_until = $lease_until
+        """,
+        {"task_id": task_id, "lease_until": lease_until},
+    )
+
+
 def open_bugs(graph: Graph) -> list[dict[str, object]]:
     """Return open bugs and the artifact each bug was found in."""
     result = graph.ro_query(

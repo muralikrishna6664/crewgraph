@@ -87,3 +87,35 @@ def test_mock_orchestrator_runs_real_http_checks(
         assert (tmp_path / "workspace" / graph_name).is_dir()
     finally:
         graph.delete()
+
+
+def test_orchestrator_recovers_task_from_expired_claim(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.setenv("DEMO_FLAW", "0")
+    monkeypatch.setattr(
+        "agents.worker.WORKSPACE_ROOT", tmp_path / "workspace"
+    )
+    graph_name = f"test_lease_recovery_{uuid4().hex}"
+    graph = FalkorDB().select_graph(graph_name)
+
+    try:
+        queries.create_task_dag(
+            graph,
+            [{"id": "abandoned-backend", "title": "Build API", "skill": "backend"}],
+            [],
+        )
+        abandoned_claim = queries.claim_task(
+            graph, "abandoned-backend", "dead-agent", 300
+        )
+        assert abandoned_claim is not None
+        assert abandoned_claim.properties["status"] == "claimed"
+        queries.set_task_lease_until(graph, "abandoned-backend", 0)
+
+        result = run_project(graph)
+
+        assert len(result) == 1
+        assert result[0].properties["status"] == "done"
+        assert result[0].properties["claimed_by"] == "backend"
+        assert result[0].properties["failure_reason"] == "Recovered expired lease"
+    finally:
+        graph.delete()

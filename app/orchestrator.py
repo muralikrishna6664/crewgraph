@@ -1,6 +1,7 @@
 """Claim and execute ready project tasks in parallel."""
 
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 from falkordb import FalkorDB
 from falkordb.graph import Graph
@@ -41,6 +42,7 @@ def run_project(
     debugger = DebuggerAgent()
 
     while True:
+        queries.recover_expired_leases(graph, int(time.time() * 1000))
         claims: list[tuple[Agent, Node]] = []
         for task in queries.ready_tasks(graph):
             skill = task.properties.get("skill")
