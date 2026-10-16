@@ -2,6 +2,85 @@
 
 from falkordb.graph import Graph
 from falkordb.node import Node
+from falkordb import FalkorDB
+
+
+def record_event(
+    graph: Graph,
+    event_type: str,
+    task_id: str | None = None,
+    artifact_id: str | None = None,
+    bug_id: str | None = None,
+    detail: str = "",
+) -> Node:
+    """Persist a timestamped project event for the dashboard feed."""
+    from uuid import uuid4
+
+    result = graph.query(
+        """
+        CREATE (event:Event {
+            id: $event_id,
+            type: $event_type,
+            ts: timestamp(),
+            task_id: $task_id,
+            artifact_id: $artifact_id,
+            bug_id: $bug_id,
+            detail: $detail
+        })
+        RETURN event
+        """,
+        {
+            "event_id": uuid4().hex,
+            "event_type": event_type,
+            "task_id": task_id,
+            "artifact_id": artifact_id,
+            "bug_id": bug_id,
+            "detail": detail,
+        },
+    )
+    return result.result_set[0][0]
+
+
+def list_projects() -> list[str]:
+    """Return graph names that contain a Project node."""
+    client = FalkorDB()
+    try:
+        projects = []
+        for graph_name in client.list_graphs():
+            graph = client.select_graph(graph_name)
+            if graph.ro_query("MATCH (project:Project) RETURN project").result_set:
+                projects.append(graph_name)
+        return projects
+    finally:
+        client.close()
+
+
+def graph_nodes(graph: Graph) -> list[Node]:
+    """Return all nodes in a project's graph for graph visualization."""
+    result = graph.ro_query("MATCH (node) RETURN node")
+    return [row[0] for row in result.result_set]
+
+
+def graph_edges(graph: Graph) -> list[tuple[Node, str, Node]]:
+    """Return each graph relationship with its source and target nodes."""
+    result = graph.ro_query(
+        "MATCH (source)-[edge]->(target) RETURN source, type(edge), target"
+    )
+    return [(row[0], row[1], row[2]) for row in result.result_set]
+
+
+def recent_events(graph: Graph, limit: int = 50) -> list[Node]:
+    """Return the most recent persisted events in timestamp order."""
+    result = graph.ro_query(
+        """
+        MATCH (event:Event)
+        RETURN event
+        ORDER BY event.ts DESC
+        LIMIT $limit
+        """,
+        {"limit": limit},
+    )
+    return list(reversed([row[0] for row in result.result_set]))
 
 
 def record_artifact(
@@ -40,7 +119,15 @@ def record_artifact(
     )
     if not result.result_set:
         raise ValueError(f"Task not found: {task_id}")
-    return result.result_set[0][0]
+    artifact = result.result_set[0][0]
+    record_event(
+        graph,
+        "artifact created",
+        task_id=task_id,
+        artifact_id=artifact.properties["id"],
+        detail=f"{agent} created {path}",
+    )
+    return artifact
 
 
 def handoff(
@@ -138,6 +225,13 @@ def record_bug(
     )
     if not result.result_set:
         raise ValueError(f"Artifact not found: {artifact_id}")
+    record_event(
+        graph,
+        "bug found",
+        artifact_id=artifact_id,
+        bug_id=bug_id,
+        detail=title,
+    )
 
 
 def link_artifact_fixes_bug(
@@ -161,14 +255,17 @@ def mark_bugs_fixed(graph: Graph, bug_ids: list[str]) -> None:
     """Mark the listed bugs fixed after their regression checks pass."""
     if not bug_ids:
         return
-    graph.query(
+    result = graph.query(
         """
         UNWIND $bug_ids AS bug_id
         MATCH (bug:Bug {id: bug_id})
         SET bug.status = 'fixed'
+        RETURN bug.id
         """,
         {"bug_ids": bug_ids},
     )
+    for row in result.result_set:
+        record_event(graph, "bug fixed", bug_id=row[0])
 
 
 def get_task(graph: Graph, task_id: str) -> Node | None:
@@ -480,7 +577,16 @@ def claim_task(
             "lease_seconds": lease_seconds,
         },
     )
-    return result.result_set[0][0] if result.result_set else None
+    if not result.result_set:
+        return None
+    task = result.result_set[0][0]
+    record_event(
+        graph,
+        "task claimed",
+        task_id=task_id,
+        detail=f"Claimed by {agent}",
+    )
+    return task
 
 
 def complete_task(graph: Graph, task_id: str) -> Node | None:
@@ -495,6 +601,8 @@ def complete_task(graph: Graph, task_id: str) -> Node | None:
     )
     if not result.result_set:
         return None
+    task = result.result_set[0][0]
+    record_event(graph, "task done", task_id=task_id)
 
     graph.query(
         """
@@ -507,7 +615,7 @@ def complete_task(graph: Graph, task_id: str) -> Node | None:
         SET task.status = 'ready'
         """
     )
-    return result.result_set[0][0]
+    return task
 
 
 def project_task_statuses(graph: Graph) -> list[Node]:
