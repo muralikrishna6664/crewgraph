@@ -240,6 +240,10 @@ There is no standalone reviewer agent in this implementation; `Review` is only a
 
 Requirements: Docker with Compose.
 
+#### Persistence investigation (baseline before the fix)
+
+In the original Compose configuration, a demo project disappeared after `docker compose down` and `docker compose up -d`. Inspection showed Redis `appendonly` was `no`, and its active data directory was `/var/lib/falkordb/data`, while the Compose named volume was mounted at `/data`. Thus Redis wrote outside the mounted volume, and the default snapshot policy did not guarantee a snapshot for the small demo before the container was removed. The following persistence configuration fixes both the durability setting and the mount path.
+
 ```powershell
 docker compose up -d --build
 ```
