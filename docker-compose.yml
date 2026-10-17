@@ -6,6 +6,13 @@ services:
       - "3000:3000"
     volumes:
       - falkordb_data:/data
+    environment:
+      FALKORDB_DATA_PATH: /data
+      REDIS_ARGS: >-
+        --appendonly yes
+        --save 3600 1
+        --save 300 100
+        --save 60 10000
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -37,3 +44,4 @@ services:
 
 volumes:
   falkordb_data:
+    name: crewgraph_falkordb_data
