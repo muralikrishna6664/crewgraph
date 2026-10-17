@@ -34,7 +34,11 @@ def test_release_status_reports_blockers_and_allows_approved_complete_project() 
 
         allowed = client.get(f"/projects/{project_id}/release-status")
         assert allowed.status_code == 200
-        assert allowed.json() == {"can_release": True, "reasons": []}
+        assert allowed.json() == {
+            "can_release": True,
+            "released": True,
+            "reasons": [],
+        }
         assert queries.can_release(graph, project_id)
 
         released_tasks = run_project(graph)
@@ -43,6 +47,8 @@ def test_release_status_reports_blockers_and_allows_approved_complete_project() 
             and task.properties["status"] == "done"
             for task in released_tasks
         )
+        released = client.get(f"/projects/{project_id}/release-status")
+        assert released.json()["released"] is True
     finally:
         graph.delete()
 
@@ -72,6 +78,7 @@ def test_open_bug_blocks_release_even_after_approval() -> None:
 
         assert status.status_code == 200
         assert status.json()["can_release"] is False
+        assert status.json()["released"] is False
         assert any("Open bugs" in reason for reason in status.json()["reasons"])
     finally:
         graph.delete()

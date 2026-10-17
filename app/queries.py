@@ -663,14 +663,18 @@ def approve_project(graph: Graph, project_id: str) -> Node:
 
 
 def release_status(graph: Graph, project_id: str) -> dict[str, object]:
-    """Return whether release is allowed and a list of reasons if it is blocked."""
+    """Return release eligibility, completion, and all blocking reasons."""
     project_result = graph.ro_query(
         "MATCH (project:Project {id: $project_id}) RETURN project",
         {"project_id": project_id},
     )
     reasons: list[str] = []
     if not project_result.result_set:
-        return {"can_release": False, "reasons": ["Project does not exist"]}
+        return {
+            "can_release": False,
+            "released": False,
+            "reasons": ["Project does not exist"],
+        }
 
     tasks = graph.ro_query("MATCH (task:Task) RETURN task").result_set
     unfinished = [
@@ -704,7 +708,20 @@ def release_status(graph: Graph, project_id: str) -> dict[str, object]:
     if not approvals:
         reasons.append("Human approval is required")
 
-    return {"can_release": not reasons, "reasons": reasons}
+    released = is_released(graph, project_id)
+    return {"can_release": not reasons, "released": released, "reasons": reasons}
+
+
+def is_released(graph: Graph, project_id: str) -> bool:
+    """Return true only when the project's release task has completed."""
+    result = graph.ro_query(
+        """
+        MATCH (task:Task {id: $task_id, status: 'done'})
+        RETURN task
+        """,
+        {"task_id": f"{project_id}:release"},
+    )
+    return bool(result.result_set)
 
 
 def can_release(graph: Graph, project_id: str) -> bool:

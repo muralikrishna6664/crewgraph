@@ -35,8 +35,8 @@ def dashboard() -> FileResponse:
     return FileResponse(page, media_type="text/html")
 
 
-def _run_demo(project_id: str, flaw: bool) -> None:
-    """Plan and run a mock project in an isolated background thread."""
+def _prepare_demo(project_id: str, flaw: bool) -> None:
+    """Persist the mock plan before returning a project ID to the dashboard."""
     with _demo_lock:
         previous_provider = os.environ.get("LLM_PROVIDER")
         previous_flaw = os.environ.get("DEMO_FLAW")
@@ -49,7 +49,29 @@ def _run_demo(project_id: str, flaw: bool) -> None:
             queries.link_tasks_to_project(
                 graph, project_id, [task["id"] for task in tasks]
             )
-            run_project(graph)
+        except Exception:
+            logging.exception("Demo preparation failed for project %s", project_id)
+            raise
+        finally:
+            if previous_provider is None:
+                os.environ.pop("LLM_PROVIDER", None)
+            else:
+                os.environ["LLM_PROVIDER"] = previous_provider
+            if previous_flaw is None:
+                os.environ.pop("DEMO_FLAW", None)
+            else:
+                os.environ["DEMO_FLAW"] = previous_flaw
+
+
+def _run_demo(project_id: str, flaw: bool) -> None:
+    """Run a prepared mock project in an isolated background thread."""
+    with _demo_lock:
+        previous_provider = os.environ.get("LLM_PROVIDER")
+        previous_flaw = os.environ.get("DEMO_FLAW")
+        os.environ["LLM_PROVIDER"] = "mock"
+        os.environ["DEMO_FLAW"] = "1" if flaw else "0"
+        try:
+            run_project(init_project(project_id))
         except Exception:
             logging.exception("Demo run failed for project %s", project_id)
             raise
@@ -68,6 +90,7 @@ def _run_demo(project_id: str, flaw: bool) -> None:
 def start_demo(request: DemoRunRequest) -> dict[str, str]:
     """Start a mock demo run in a background thread and return its project ID."""
     project_id = f"dashboard_demo_{uuid4().hex[:12]}"
+    _prepare_demo(project_id, request.flaw)
     thread = Thread(
         target=_run_demo,
         args=(project_id, request.flaw),

@@ -90,7 +90,10 @@
     const cy = cytoscape({
       container: document.getElementById("graph"),
       elements: [],
-      layout: { name: "breadthfirst", directed: true, padding: 28, spacingFactor: 1.1 },
+      layout: {
+        name: "breadthfirst", directed: true, direction: "TB",
+        padding: 28, spacingFactor: 1.1
+      },
       style: [
         {
           selector: "node",
@@ -164,6 +167,16 @@
       }
     }
 
+    function showEmptyDetails() {
+      const details = document.getElementById("details");
+      details.replaceChildren();
+      const name = document.createElement("dt");
+      const content = document.createElement("dd");
+      name.textContent = "Node";
+      content.textContent = "Click a graph node to inspect it.";
+      details.append(name, content);
+    }
+
     function showNodeEdges(nodeId) {
       cy.edges().removeClass("edge-visible");
       if (nodeId) cy.$id(nodeId).connectedEdges().addClass("edge-visible");
@@ -197,8 +210,7 @@
         cy.elements().remove();
         lastNodeIds = null;
         selectedNodeId = null;
-        document.getElementById("details").innerHTML =
-          "<dt>Node</dt><dd>Click a graph node to inspect it.</dd>";
+        showEmptyDetails();
         banner.textContent = "No projects yet. Start a demo to create one.";
         banner.className = "";
         document.getElementById("events").replaceChildren();
@@ -228,7 +240,8 @@
           ...edges
         ]);
         const layout = cy.layout({
-          name: "breadthfirst", directed: true, padding: 28, spacingFactor: 1.1
+          name: "breadthfirst", directed: true, direction: "TB",
+          padding: 28, spacingFactor: 1.1
         });
         layout.one("layoutstop", () => cy.fit(cy.elements(), 28));
         layout.run();
@@ -245,10 +258,21 @@
       }
       showNodeEdges(hoveredNodeId || selectedNodeId);
 
-      banner.className = release.can_release ? "allowed" : "blocked";
-      banner.textContent = release.can_release
-        ? "Release gate passed."
-        : `Release blocked: ${release.reasons.join("; ")}`;
+      banner.className = release.released
+        ? "allowed"
+        : release.can_release ? "allowed" : "blocked";
+      if (release.released) {
+        banner.textContent = "Released.";
+      } else if (
+        release.reasons.length === 1
+        && release.reasons[0] === "Human approval is required"
+      ) {
+        banner.textContent = "Human approval is required";
+      } else {
+        banner.textContent = release.can_release
+          ? "Ready for release."
+          : `Release blocked: ${release.reasons.join("; ")}`;
+      }
       const eventList = document.getElementById("events");
       eventList.replaceChildren();
       for (const item of events) {
