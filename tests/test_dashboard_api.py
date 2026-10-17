@@ -2,9 +2,20 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from falkordb import FalkorDB
+from redis.exceptions import ResponseError
 
 from app import queries
+import app.main as main
 from app.main import app
+
+
+def _delete_test_graph(graph) -> None:
+    """Delete a temporary graph, allowing FalkorDB's empty-graph response."""
+    try:
+        graph.delete()
+    except ResponseError as error:
+        if "Invalid graph operation on empty key" not in str(error):
+            raise
 
 
 def test_project_graph_and_events_endpoints_return_persisted_data() -> None:
@@ -77,4 +88,51 @@ def test_project_graph_and_events_endpoints_return_persisted_data() -> None:
         timestamps = [event["ts"] for event in events]
         assert timestamps == sorted(timestamps)
     finally:
-        graph.delete()
+        _delete_test_graph(graph)
+
+
+def test_registered_starting_project_endpoints_return_empty_payloads() -> None:
+    project_id = f"test_dashboard_starting_{uuid4().hex}"
+    graph = FalkorDB().select_graph(project_id)
+    client = TestClient(app)
+
+    try:
+        with main._demo_runs_lock:
+            main._demo_runs[project_id] = {"status": "starting", "message": ""}
+
+        graph_response = client.get(f"/projects/{project_id}/graph")
+        events_response = client.get(f"/projects/{project_id}/events")
+        release_response = client.get(f"/projects/{project_id}/release-status")
+
+        assert graph_response.status_code == 200
+        assert graph_response.json() == {
+            "nodes": [],
+            "edges": [],
+            "status": "starting",
+        }
+        assert events_response.status_code == 200
+        assert events_response.json() == []
+        assert release_response.status_code == 200
+        assert release_response.json() == {
+            "can_release": False,
+            "released": False,
+            "reasons": ["Project is starting"],
+            "status": "starting",
+        }
+    finally:
+        with main._demo_runs_lock:
+            main._demo_runs.pop(project_id, None)
+        _delete_test_graph(graph)
+
+
+def test_unknown_project_graph_events_and_release_endpoints_return_404() -> None:
+    project_id = f"test_dashboard_unknown_{uuid4().hex}"
+    graph = FalkorDB().select_graph(project_id)
+    client = TestClient(app)
+
+    try:
+        assert client.get(f"/projects/{project_id}/graph").status_code == 404
+        assert client.get(f"/projects/{project_id}/events").status_code == 404
+        assert client.get(f"/projects/{project_id}/release-status").status_code == 404
+    finally:
+        _delete_test_graph(graph)

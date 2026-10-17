@@ -100,7 +100,18 @@ def _run_demo(project_id: str, flaw: bool) -> None:
 def start_demo(request: DemoRunRequest) -> dict[str, str]:
     """Start a mock demo run in a background thread and return its project ID."""
     project_id = f"dashboard_demo_{uuid4().hex[:12]}"
-    _prepare_demo(project_id, request.flaw)
+    with _demo_runs_lock:
+        _demo_runs[project_id] = {"status": "starting", "message": ""}
+    try:
+        _prepare_demo(project_id, request.flaw)
+    except Exception as error:
+        logging.exception("Demo preparation failed for project %s", project_id)
+        with _demo_runs_lock:
+            _demo_runs[project_id] = {
+                "status": "failed",
+                "message": str(error) or type(error).__name__,
+            }
+        return {"project_id": project_id, "status": "failed"}
     with _demo_runs_lock:
         _demo_runs[project_id] = {"status": "running", "message": ""}
     thread = Thread(
@@ -142,8 +153,8 @@ def _node_id(node: Node) -> str:
     return str(value)
 
 
-def _project_nodes(project_id: str) -> tuple[Graph, list[Node]]:
-    """Load a project graph and return its nodes or report a missing project."""
+def _project_nodes(project_id: str) -> tuple[Graph, list[Node], bool]:
+    """Load project nodes and identify a registered project that is starting."""
     graph = get_graph(project_id)
     try:
         nodes = queries.graph_nodes(graph)
@@ -151,13 +162,18 @@ def _project_nodes(project_id: str) -> tuple[Graph, list[Node]]:
         if "Invalid graph operation on empty key" not in str(error):
             raise
         nodes = []
-    if not any(
+    project_exists = any(
         "Project" in node.labels
         and node.properties.get("id") == project_id
         for node in nodes
-    ):
+    )
+    if not project_exists:
+        with _demo_runs_lock:
+            run = _demo_runs.get(project_id)
+        if run is not None and run.get("status") in {"starting", "running"}:
+            return graph, [], True
         raise HTTPException(status_code=404, detail="Project not found")
-    return graph, nodes
+    return graph, nodes, False
 
 
 @app.get("/projects")
@@ -167,9 +183,11 @@ def projects() -> list[str]:
 
 
 @app.get("/projects/{project_id}/graph")
-def project_graph(project_id: str) -> dict[str, list[dict[str, object]]]:
+def project_graph(project_id: str) -> dict[str, object]:
     """Return project nodes and relationships in dashboard-friendly JSON."""
-    graph, nodes = _project_nodes(project_id)
+    graph, nodes, starting = _project_nodes(project_id)
+    if starting:
+        return {"nodes": [], "edges": [], "status": "starting"}
     node_records = []
     for node in nodes:
         if "Event" in node.labels:
@@ -205,7 +223,9 @@ def project_graph(project_id: str) -> dict[str, list[dict[str, object]]]:
 @app.get("/projects/{project_id}/events")
 def project_events(project_id: str) -> list[dict[str, object]]:
     """Return recent persisted project events in chronological order."""
-    graph, _ = _project_nodes(project_id)
+    graph, _, starting = _project_nodes(project_id)
+    if starting:
+        return []
     return [event.properties for event in queries.recent_events(graph)]
 
 
@@ -238,4 +258,12 @@ def approve_project(project_id: str) -> dict[str, object]:
 @app.get("/projects/{project_id}/release-status")
 def project_release_status(project_id: str) -> dict[str, object]:
     """Return the release gate status and all blocking reasons."""
-    return queries.release_status(get_graph(project_id), project_id)
+    graph, _, starting = _project_nodes(project_id)
+    if starting:
+        return {
+            "can_release": False,
+            "released": False,
+            "reasons": ["Project is starting"],
+            "status": "starting",
+        }
+    return queries.release_status(graph, project_id)
