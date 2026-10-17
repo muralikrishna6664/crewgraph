@@ -12,17 +12,24 @@ def test_dashboard_root_serves_single_page() -> None:
     assert "text/html" in response.headers["content-type"]
     assert "cytoscape@3.30.4" in response.text
     assert 'banner.textContent = "No projects yet. Click Run demo."' in response.text
+    assert 'case "Approval": return `Approval (${properties.status || "pending"})`;' in response.text
+    assert 'case "Project": return properties.name || "Project";' in response.text
+    assert 'case "Lesson": return properties.title || properties.content || "Lesson";' in response.text
+    assert 'case "Review":' in response.text
+    assert 'approved: "#3e9b68"' in response.text
+    assert 'pending: "#e4bc3f"' in response.text
+    assert 'new Date(timestamp).toLocaleTimeString()' in response.text
+    assert 'content.title = String(value);' in response.text
     assert "Run demo with flaw" in response.text
     assert 'name: "breadthfirst", directed: true' in response.text
     assert 'direction: "TB"' in response.text
     assert 'width: 40, height: 40' in response.text
     assert '"text-wrap": "wrap", "text-max-width": 120, "font-size": 12' in response.text
     assert 'label: "data(title)"' in response.text
-    assert "Task: properties.title" in response.text
-    assert "Artifact: properties.path" in response.text
-    assert "Agent: properties.name" in response.text
-    assert "Bug: properties.title" in response.text
-    assert "Project: properties.name" in response.text
+    assert 'case "Task": return properties.title || "Task";' in response.text
+    assert 'case "Artifact": return properties.path || "Artifact";' in response.text
+    assert 'case "Agent": return properties.name || "Agent";' in response.text
+    assert 'case "Bug": return properties.title || "Bug";' in response.text
     assert "String(label).slice(0, 24)" in response.text
     assert 'label: ""' in response.text
     assert 'selector: "edge.edge-visible"' in response.text

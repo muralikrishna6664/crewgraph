@@ -108,6 +108,12 @@
               if (data.label === "Bug") {
                 return data.status === "fixed" ? "#3e9b68" : "#d64545";
               }
+              if (data.label === "Approval") {
+                return {
+                  approved: "#3e9b68",
+                  pending: "#e4bc3f"
+                }[data.status] || "#8993a3";
+              }
               if (colors[data.label]) return colors[data.label];
               if (data.label === "Task") {
                 return {
@@ -165,10 +171,39 @@
         const name = document.createElement("dt");
         name.textContent = key;
         const content = document.createElement("dd");
-        content.textContent = typeof value === "object"
-          ? JSON.stringify(value, null, 2)
-          : String(value);
+        if (key === "ts" && value !== null) {
+          const timestamp = typeof value === "number"
+            ? value
+            : Date.parse(String(value));
+          if (Number.isFinite(timestamp)) {
+            content.textContent = new Date(timestamp).toLocaleTimeString();
+            content.title = String(value);
+          } else {
+            content.textContent = String(value);
+          }
+        } else {
+          content.textContent = typeof value === "object"
+            ? JSON.stringify(value, null, 2)
+            : String(value);
+        }
         details.append(name, content);
+      }
+    }
+
+    function nodeDisplayLabel(node) {
+      const properties = node.properties || {};
+      switch (node.label) {
+        case "Task": return properties.title || "Task";
+        case "Artifact": return properties.path || "Artifact";
+        case "Agent": return properties.name || "Agent";
+        case "Bug": return properties.title || "Bug";
+        case "Project": return properties.name || "Project";
+        case "Approval": return `Approval (${properties.status || "pending"})`;
+        case "Lesson": return properties.title || properties.content || "Lesson";
+        case "Review":
+          return properties.title
+            || (properties.status ? `Review (${properties.status})` : "Review");
+        default: return node.label || node.id;
       }
     }
 
@@ -251,14 +286,7 @@
           : Promise.resolve(null)
       ]);
       const nodes = graph.nodes.map(node => {
-        const properties = node.properties || {};
-        const label = {
-          Task: properties.title,
-          Artifact: properties.path,
-          Agent: properties.name,
-          Bug: properties.title,
-          Project: properties.name
-        }[node.label] || node.title || node.id;
+        const label = nodeDisplayLabel(node);
         return { ...node, title: String(label).slice(0, 24) };
       });
       const edges = graph.edges.map(edge => ({

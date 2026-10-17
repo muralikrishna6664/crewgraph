@@ -46,6 +46,7 @@ def test_project_graph_and_events_endpoints_return_persisted_data() -> None:
         )
         assert queries.complete_task(graph, "task-1") is not None
         queries.mark_bugs_fixed(graph, ["bug-1"])
+        queries.approve_project(graph, project_id)
 
         projects_response = client.get("/projects")
         graph_response = client.get(f"/projects/{project_id}/graph")
@@ -62,6 +63,12 @@ def test_project_graph_and_events_endpoints_return_persisted_data() -> None:
         assert task["status"] == "done"
         bug_node = next(node for node in graph_data["nodes"] if node["id"] == "bug-1")
         assert bug_node["status"] == "fixed"
+        approval_node = next(
+            node
+            for node in graph_data["nodes"]
+            if node["label"] == "Approval"
+        )
+        assert approval_node["status"] == "approved"
         assert {"source": "task-1", "target": project_id, "type": "PART_OF"} in (
             graph_data["edges"]
         )
