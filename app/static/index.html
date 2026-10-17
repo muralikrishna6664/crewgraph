@@ -18,6 +18,7 @@
     #release-banner { padding: 10px 20px; background: #e8edf7; }
     #release-banner.blocked { background: #fff0d8; }
     #release-banner.allowed { background: #ddf5e7; }
+    #release-banner.starting { background: #e8edf7; }
     #legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 20px; background: white; border-bottom: 1px solid #dce2ec; font-size: 12px; }
     .legend-item { display: inline-flex; align-items: center; gap: 5px; }
     .legend-swatch { width: 12px; height: 12px; border-radius: 50%; }
@@ -89,6 +90,8 @@
     let hoveredNodeId = null;
     let activeRunId = null;
     let projectsRefreshVersion = 0;
+    let activeRunStartedAt = 0;
+    let consecutiveRefreshFailures = 0;
     const cy = cytoscape({
       container: document.getElementById("graph"),
       elements: [],
@@ -188,6 +191,21 @@
       const response = await fetch(path, options);
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       return response.json();
+    }
+
+    function reportRefreshFailure(error) {
+      consecutiveRefreshFailures += 1;
+      if (
+        error.message.startsWith("404")
+        && activeRunId
+        && Date.now() - activeRunStartedAt < 5000
+      ) {
+        banner.className = "starting";
+        banner.textContent = "Starting...";
+        message.textContent = "";
+      } else if (consecutiveRefreshFailures >= 3) {
+        message.textContent = `Dashboard refresh failed: ${error.message}`;
+      }
     }
 
     async function refreshProjects(preferred) {
@@ -306,7 +324,9 @@
     }
 
     async function startDemo(flaw) {
-      message.textContent = "Starting mock demo…";
+      message.textContent = "";
+      banner.className = "starting";
+      banner.textContent = "Starting...";
       try {
         const started = await request("/demo/run", {
           method: "POST",
@@ -314,12 +334,15 @@
           body: JSON.stringify({ flaw })
         });
         activeRunId = started.project_id;
+        activeRunStartedAt = Date.now();
+        consecutiveRefreshFailures = 0;
         await refreshProjects(started.project_id);
         picker.value = started.project_id;
-        message.textContent = `Started ${started.project_id}`;
         await refreshProject();
+        consecutiveRefreshFailures = 0;
+        message.textContent = "";
       } catch (error) {
-        message.textContent = `Could not start demo: ${error.message}`;
+        reportRefreshFailure(error);
       }
     }
 
@@ -329,23 +352,22 @@
         await request(`/projects/${encodeURIComponent(picker.value)}/approve`, { method: "POST" });
         await refreshProject();
       } catch (error) {
-        message.textContent = `Approval failed: ${error.message}`;
+        reportRefreshFailure(error);
       }
     });
     document.getElementById("run-demo").addEventListener("click", () => startDemo(false));
     document.getElementById("run-flaw").addEventListener("click", () => startDemo(true));
-    picker.addEventListener("change", () => refreshProject().catch(error => {
-      message.textContent = `Could not load project: ${error.message}`;
-    }));
+    picker.addEventListener("change", () => refreshProject().catch(reportRefreshFailure));
 
     async function poll() {
       try {
         const previous = picker.value;
         await refreshProjects(previous);
         await refreshProject();
+        consecutiveRefreshFailures = 0;
         message.textContent = "";
       } catch (error) {
-        message.textContent = `Dashboard refresh failed: ${error.message}`;
+        reportRefreshFailure(error);
       }
     }
     poll();

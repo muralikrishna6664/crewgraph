@@ -33,6 +33,11 @@ def test_dashboard_root_serves_single_page() -> None:
     assert 'banner.textContent = "Released."' in response.text
     assert 'banner.textContent = "Running..."' in response.text
     assert "Run failed: ${run.message}" in response.text
+    assert '#release-banner.starting' in response.text
+    assert 'banner.textContent = "Starting..."' in response.text
+    assert "Date.now() - activeRunStartedAt < 5000" in response.text
+    assert "consecutiveRefreshFailures >= 3" in response.text
+    assert "consecutiveRefreshFailures = 0" in response.text
     assert "const projectRefreshVersion = ++projectsRefreshVersion" in response.text
     assert "if (projectRefreshVersion !== projectsRefreshVersion)" in response.text
     assert "preferred || picker.value || activeRunId" in response.text
