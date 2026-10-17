@@ -361,7 +361,7 @@
 
     async function poll() {
       try {
-        const previous = picker.value;
+        const previous = activeRunId || picker.value;
         await refreshProjects(previous);
         await refreshProject();
         consecutiveRefreshFailures = 0;

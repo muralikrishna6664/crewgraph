@@ -44,6 +44,7 @@ def test_dashboard_root_serves_single_page() -> None:
     assert "projectNames.push(activeRunId)" in response.text
     assert "await refreshProjects(started.project_id)" in response.text
     assert "picker.value = started.project_id" in response.text
+    assert "const previous = activeRunId || picker.value" in response.text
 
 
 def test_demo_endpoint_starts_a_background_run(monkeypatch) -> None:
