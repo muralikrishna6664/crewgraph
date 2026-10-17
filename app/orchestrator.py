@@ -3,7 +3,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import time
 
-from falkordb import FalkorDB
 from falkordb.graph import Graph
 from falkordb.node import Node
 
@@ -15,13 +14,14 @@ from agents.security import SecurityAgent
 from agents.tester import TesterAgent
 from agents.worker import run_task
 from app import queries
+from app.db import get_client
 
 
 def _run_with_own_graph(
     project_id: str, agent: Agent, task: Node
 ) -> list[str]:
     """Run a task using a separate FalkorDB client connection."""
-    client = FalkorDB()
+    client = get_client()
     try:
         return run_task(client.select_graph(project_id), agent, task)
     finally:
