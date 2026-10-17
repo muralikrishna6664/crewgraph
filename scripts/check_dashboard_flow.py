@@ -64,12 +64,32 @@ def verify_repaired_demo(base_url: str, project_id: str) -> None:
     bugs = [node for node in nodes if node.get("label") == "Bug"]
     if not bugs or any(bug.get("status") != "fixed" for bug in bugs):
         raise RuntimeError("The flaw was not found and marked fixed")
-    if not any(edge.get("type") == "FIXES" for edge in graph.get("edges", [])):
+    fix_edges = [
+        edge for edge in graph.get("edges", []) if edge.get("type") == "FIXES"
+    ]
+    if not fix_edges:
         raise RuntimeError("No repair artifact is linked to the detected bug")
 
-    event_types = {event.get("type") for event in events}
-    if not {"bug found", "bug fixed", "task done"} <= event_types:
+    event_types = [event.get("type") for event in events]
+    if "bug found" not in event_types or "bug fixed" not in event_types:
         raise RuntimeError("The event feed is missing repair or task-completion events")
+    if event_types.index("bug found") >= event_types.index("bug fixed"):
+        raise RuntimeError("The bug was fixed before a finding was recorded")
+    debugger_artifacts = [
+        node
+        for node in nodes
+        if node.get("label") == "Artifact"
+        and node.get("properties", {}).get("kind") == "backend"
+        and ":repair:" in str(node.get("id", ""))
+    ]
+    if not debugger_artifacts:
+        raise RuntimeError("No debugger repair artifact is present in the graph")
+    for task_id in ("todo-tests", "todo-security"):
+        if not any(
+            event.get("type") == "task done" and event.get("task_id") == task_id
+            for event in events
+        ):
+            raise RuntimeError(f"Task completion event is missing for {task_id}")
 
 
 def run_flow(base_url: str, timeout: int) -> list[str]:
@@ -92,7 +112,39 @@ def run_flow(base_url: str, timeout: int) -> list[str]:
     record(f"Started flaw demo: {project_id}")
 
     approval_sent = False
+    seen_events: set[str] = set()
     while time.monotonic() < deadline:
+        run_status = request_json(base_url, f"/demo/runs/{project_id}")
+        if not isinstance(run_status, dict):
+            raise RuntimeError("Demo-run endpoint returned invalid data")
+        if run_status.get("status") == "failed":
+            message = run_status.get("message") or "unspecified background failure"
+            record(f"Run failed: {message}")
+            raise RuntimeError(f"Demo run failed: {message}")
+
+        events = request_json(base_url, f"/projects/{project_id}/events")
+        if not isinstance(events, list):
+            raise RuntimeError("Project events endpoint returned invalid data")
+        for event in events:
+            event_id = str(event.get("id", ""))
+            if not event_id or event_id in seen_events:
+                continue
+            seen_events.add(event_id)
+            event_type = event.get("type")
+            if event_type == "bug found":
+                record("Bug found")
+            elif (
+                event_type == "artifact created"
+                and str(event.get("detail", "")).startswith("debugger created ")
+            ):
+                record("Debugger fix recorded")
+            elif event_type == "bug fixed":
+                record("Bug fixed")
+            elif event_type == "task done" and event.get("task_id") == "todo-tests":
+                record("Tester passed")
+            elif event_type == "task done" and event.get("task_id") == "todo-security":
+                record("Security passed")
+
         status = request_json(
             base_url, f"/projects/{project_id}/release-status"
         )
@@ -100,18 +152,30 @@ def run_flow(base_url: str, timeout: int) -> list[str]:
             raise RuntimeError("Release-status endpoint returned invalid data")
 
         state = flow_state(status)
-        record(state)
+        record("Released" if state == "Released" else "Running...")
         if status.get("released"):
             if not approval_sent:
                 raise RuntimeError("Project was released before this checker approved it")
             return timeline
 
         if state == "Waiting for approval" and not approval_sent:
+            if run_status.get("status") != "finished":
+                raise RuntimeError(
+                    "Release gate requested approval before the demo run finished"
+                )
             verify_repaired_demo(base_url, project_id)
-            record("Tester and security passed; all detected bugs are fixed")
+            if flow_state(status) != "Waiting for approval":
+                raise RuntimeError("Project is not waiting solely for human approval")
+            record("Human approval is required")
             request_json(base_url, f"/projects/{project_id}/approve", {})
             approval_sent = True
             record("Approval submitted")
+        elif run_status.get("status") == "finished" and not approval_sent:
+            if state != "Waiting for approval":
+                raise RuntimeError(
+                    "Demo finished without reaching the approval-only release gate: "
+                    + "; ".join(str(reason) for reason in status.get("reasons", []))
+                )
 
         remaining = deadline - time.monotonic()
         if remaining > 0:
