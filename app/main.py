@@ -127,6 +127,8 @@ def project_graph(project_id: str) -> dict[str, list[dict[str, object]]]:
     graph, nodes = _project_nodes(project_id)
     node_records = []
     for node in nodes:
+        if "Event" in node.labels:
+            continue
         properties = node.properties
         labels = node.labels
         node_records.append(
@@ -150,6 +152,7 @@ def project_graph(project_id: str) -> dict[str, list[dict[str, object]]]:
             "type": relationship,
         }
         for source, relationship, target in queries.graph_edges(graph)
+        if "Event" not in source.labels and "Event" not in target.labels
     ]
     return {"nodes": node_records, "edges": edge_records}
 
