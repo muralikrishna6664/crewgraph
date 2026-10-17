@@ -5,6 +5,7 @@ from falkordb.node import Node
 
 from app.db import get_client
 
+
 def record_event(
     graph: Graph,
     event_type: str,

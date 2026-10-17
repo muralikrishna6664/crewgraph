@@ -1,20 +1,8 @@
 # CrewGraph
 
-CrewGraph is a prototype for coordinating software-building agents through a shared FalkorDB knowledge graph. Each project has its own graph, where task dependencies, claims, handoffs, artifacts, bugs, approvals, and events are persisted. It runs in mock LLM mode by default, without an API key; in this mode the planner DAG and worker file contents are canned fixtures, not live model output.
+## Problem statement and track
 
-Agents never call one another directly: they read and write shared project state in FalkorDB. The orchestrator uses those graph facts to decide what can run, who can claim it, what evidence downstream work receives, and whether release is allowed.
-
-The graph scheduling, atomic claims, localhost HTTP endpoint checks, static security checks, bug/artifact links, and approval-based release gate are real application behavior. Planning and generated file contents are canned in mock mode. A real provider is available through the OpenAI Chat Completions API; its live output is not exercised by the automated suite.
-
-To use that provider, configure your own model and key in the shell (do not commit the key). The implementation requires all three variables:
-
-```powershell
-$env:LLM_PROVIDER = "openai"
-$env:LLM_MODEL = "<supported-model>"
-$env:LLM_API_KEY = "<your API key>"
-```
-
-The equivalent POSIX shell settings are `export LLM_PROVIDER=openai`, `export LLM_MODEL=<supported-model>`, and `export LLM_API_KEY=<your API key>`. The default `LLM_PROVIDER=mock` does not make network calls.
+CrewGraph is a prototype for the **Agent Memory and Coordination** track. It coordinates software-building agents through a shared FalkorDB graph, with a separate graph selected for each project. Agents do not call one another directly: scheduling, claims, handoffs, evidence, bugs, and release approval are shared through graph state.
 
 ## Architecture
 
@@ -22,24 +10,39 @@ The equivalent POSIX shell settings are `export LLM_PROVIDER=openai`, `export LL
 flowchart LR
     Browser[Dashboard<br/>Cytoscape.js] --> API[FastAPI]
     API --> Graph[(FalkorDB<br/>one graph per project)]
-    Planner[Planner agent] --> Graph
+    Planner[Planner] --> Graph
     Orchestrator[Orchestrator] --> Graph
-    Orchestrator --> Workers[Backend / frontend / tester / security agents]
+    Orchestrator --> Workers[Backend / frontend / tester / security]
     Workers --> Graph
     Workers --> Workspace[workspace/project-id]
-    Tester[Tester agent] -->|localhost HTTP checks| Workspace
-    Orchestrator -->|claim / recover / release gate| Graph
+    Tester[HTTP tester] -->|real localhost requests| Workspace
+    Task -- "DEPENDS_ON" --> Task
+    Task -- "PART_OF" --> Project
+    Skill[Skill (declared)]
+    Artifact -- "FOR_TASK" --> Task
+    Artifact -- "PRODUCED_BY" --> Agent
+    Task -- "HANDED_OFF_TO" --> Agent
+    Bug -- "FOUND_IN" --> Artifact
+    Artifact -- "FIXES" --> Bug
+    Project -- "APPROVES" --> Approval
+    Vulnerability -- "FOUND_IN" --> Artifact
+    Event[Timestamped Event] --> Graph
+    Lesson --> Graph
+    Episode[Episode (declared)]
+    Review[Review (declared)]
 ```
 
-## Why the graph is central
+The persisted model labels declared in [app/schema.py](./app/schema.py) are `Project`, `Task`, `Agent`, `Skill`, `Artifact`, `Bug`, `Vulnerability`, `Episode`, `Lesson`, `Approval`, and `Review`. `Event` is also created at runtime by [record_event](./app/queries.py), though it is not in the schema label tuple. The arrows above show relationships written by the current application; the schema also declares `NEEDS`, `HAS_SKILL`, `FIXED_BY`, `BLOCKS`, `REVIEWS`, and `DERIVED_FROM`, but current runtime queries do not create those edges. Repairs currently use the actual `Artifact-[:FIXES]->Bug` direction.
 
-FalkorDB is the system of record for tenant-isolated projects. The product's scheduling, handoffs, bug evidence, approvals, and dashboard events are read from or written to each project's graph; removing FalkorDB stops those workflows.
+## Why a graph
 
-The following are the Cypher statements used by the named functions in `app/queries.py`. All reads use `ro_query`; writes use `query`.
+FalkorDB is the system of record, not an optional cache. The application selects one graph per project ID. Removing FalkorDB breaks task scheduling, atomic claims, artifact and bug context, persisted events, and the release gate; there is no in-memory coordination fallback.
 
-### Scheduling and claims
+All application Cypher is kept in named functions in `app/queries.py`. These are the core statements copied from those functions.
 
-`ready_tasks(graph)` finds pending or ready tasks only when every dependency is done:
+### Scheduling and atomic claims
+
+`ready_tasks(graph)` reads pending or ready tasks only when every dependency is done:
 
 ```cypher
 MATCH (task:Task)
@@ -52,7 +55,7 @@ WHERE dependency_count = done_count
 RETURN task
 ```
 
-`claim_task(graph, task_id, agent, lease_seconds)` uses one guarded write, so only a task still in `ready` can be claimed:
+`claim_task(...)` is one guarded write query. A worker changes a task to `claimed` only if the task is still `ready`; the concurrent integration test synchronizes 20 independent connections and asserts exactly one winner:
 
 ```cypher
 MATCH (task:Task {id: $task_id})
@@ -63,7 +66,7 @@ SET task.status = 'claimed',
 RETURN task
 ```
 
-`complete_task(graph, task_id)` marks the task done, then promotes pending tasks whose dependencies are all done:
+`complete_task(...)` marks a task done, then promotes pending tasks whose dependencies are all done:
 
 ```cypher
 MATCH (task:Task {id: $task_id})
@@ -83,7 +86,7 @@ SET task.status = 'ready'
 
 ### Handoffs and evidence
 
-`handoff(...)` writes a task-to-agent handoff with its reason and timestamp:
+`handoff(...)` stores the destination agent and reason on a task-to-agent relationship:
 
 ```cypher
 MATCH (task:Task {id: $task_id})
@@ -94,9 +97,25 @@ SET handoff.reason = $reason,
 RETURN task
 ```
 
-`handoff_context(graph, task_id)` reads the task, dependency artifacts, open bugs or vulnerabilities linked to those artifacts, and project lessons in one query. `record_artifact(...)` links an artifact to both its task and producing agent.
+`handoff_context(graph, task_id)` returns the task, artifacts from its dependencies and itself, open bugs or vulnerabilities linked to those artifacts, and lessons in one read query:
 
-`record_bug(...)` merges a bug and links it to the artifact that exposed it:
+```cypher
+MATCH (task:Task {id: $task_id})
+OPTIONAL MATCH (task)-[:DEPENDS_ON]->(:Task)<-[:FOR_TASK]-(dependency_artifact:Artifact)
+OPTIONAL MATCH (task)<-[:FOR_TASK]-(own_artifact:Artifact)
+WITH task,
+     collect(DISTINCT dependency_artifact)
+         + collect(DISTINCT own_artifact) AS artifacts
+OPTIONAL MATCH (issue)-[:FOUND_IN]->(artifact:Artifact)
+WHERE artifact IN artifacts
+  AND issue.status = 'open'
+  AND (issue:Bug OR issue:Vulnerability)
+WITH task, artifacts, collect(DISTINCT issue) AS issues
+OPTIONAL MATCH (lesson:Lesson)
+RETURN task, artifacts, issues, collect(DISTINCT lesson) AS lessons
+```
+
+`record_bug(...)` routes a finding to the artifact that caused it:
 
 ```cypher
 MATCH (artifact:Artifact {id: $artifact_id})
@@ -112,9 +131,30 @@ MERGE (bug)-[:FOUND_IN]->(artifact)
 RETURN bug
 ```
 
-### Release gate
+`open_bugs(graph)` retrieves open bugs together with their source artifact:
 
-`release_status(graph, project_id)` first checks that the project exists, then reads all task statuses and open bugs, and finally checks for an approved `Approval` linked from the project:
+```cypher
+MATCH (bug:Bug {status: 'open'})-[:FOUND_IN]->(artifact:Artifact)
+RETURN bug, artifact
+ORDER BY bug.id
+```
+
+### Lease recovery and release gate
+
+At the start of each orchestrator iteration, `recover_expired_leases(...)` returns expired claims to ready state and records why:
+
+```cypher
+MATCH (task:Task)
+WHERE task.status = 'claimed'
+  AND task.lease_until <= $now
+  AND task.status <> 'done'
+SET task.status = 'ready',
+    task.failure_reason = 'Recovered expired lease'
+REMOVE task.claimed_by, task.lease_until
+RETURN task
+```
+
+`release_status(...)` runs the following reads on the project graph:
 
 ```cypher
 MATCH (project:Project {id: $project_id}) RETURN project
@@ -134,40 +174,106 @@ MATCH (:Project {id: $project_id})-[:APPROVES]->
 RETURN approval
 ```
 
-`can_release(...)` is true only when all four conditions are satisfied. Only then does the orchestrator create and complete the final release task.
+The function's Python checks require the project to exist, every task to be `done`, no open bugs, and an approved `Approval`. Only then can the orchestrator create and complete the release task. The release-status endpoint separately reports whether that release task is done.
 
-## Run locally
+### What breaks if FalkorDB is removed
 
-Requirements: Python 3.11 and Docker.
+| Feature | Without FalkorDB |
+|---|---|
+| Tenant/project selection | Project graphs cannot be selected or listed. |
+| DAG scheduling | Dependency edges and ready-task filtering are unavailable. |
+| Atomic claims and recovery | Workers cannot coordinate exclusive claims or recover persisted leases. |
+| Handoffs and context | Workers lose shared artifacts, bug evidence, and lesson context. |
+| Bug repair and events | Bug-to-artifact routing, fix links, and persisted event feed disappear. |
+| Release gate | Approval, open-bug checks, and task completion have no shared source of truth. |
+| Dashboard graph | There are no persisted nodes or relationships to display. |
+
+## Track focus areas
+
+| Focus area | Current coverage | Simplification |
+|---|---|---|
+| Episodic memory | Timestamped `Event` nodes record claims, artifacts, bugs, fixes, and task completion. | `Episode` is only a declared label; there is no summarization or episodic retrieval system. |
+| Semantic memory | `Lesson` nodes can be stored and are included in handoff context. | Lessons are not automatically learned, ranked, or curated. |
+| Procedural memory | Skill-tagged tasks are scheduled to agents by a fixed skill-to-agent mapping. | This is a small hard-coded worker set, not a general procedure/tool registry. |
+| Shared state and handoffs | Tasks, dependencies, artifacts, bugs, and handoff context are persisted in each project's graph. | Agents do not communicate outside the graph; no distributed message broker is used. |
+| High concurrency | A 20-thread barrier test proves one winner for one task. A 50-worker contention benchmark is recorded below. | Benchmark query actions are capped at eight in flight because an uncapped attempt exceeded FalkorDB's pending-query limit. |
+| Tenant isolation | Each project ID selects a distinct FalkorDB graph. | Authentication and authorization are not implemented; graph selection alone is not a production security boundary. |
+
+## LLM mode and synthetic agents
+
+The default is `LLM_PROVIDER=mock`, so the demo runs without a key or model network request. The mock planner returns a canned DAG; mock workers and debugger return canned file contents. The following parts are real application behavior: graph scheduling and atomic claims, graph-backed handoffs, real HTTP checks against the generated app on localhost, static security scanning, bug/fix links, lease recovery, human approval, and the release gate.
+
+An OpenAI Chat Completions provider is wired in [agents/llm.py](./agents/llm.py), but live model output is not covered by the tests or a live API run here. To use it, supply your own model and key in the current shell; never put a real key in source control.
 
 ```powershell
-docker compose up -d
+$env:LLM_PROVIDER = "openai"
+$env:LLM_MODEL = "your-model-name"
+$env:LLM_API_KEY = "your-key"
+```
+
+POSIX shell:
+
+```sh
+export LLM_PROVIDER="openai"
+export LLM_MODEL="your-model-name"
+export LLM_API_KEY="your-key"
+```
+
+`LLM_PROVIDER` supports `mock` and `openai`; the latter requires `LLM_MODEL` and `LLM_API_KEY`. Automated tests stub the HTTP transport and use only a synthetic key.
+
+## Setup and run
+
+### Docker one-command setup
+
+Requirements: Docker with Compose.
+
+```powershell
+docker compose up -d --build
+```
+
+The API waits for a healthy FalkorDB service, uses `FALKORDB_HOST=falkordb`, and has its own `/health` check. Open the dashboard at [http://localhost:8000](http://localhost:8000); FalkorDB Browser is at [http://localhost:3000](http://localhost:3000). Stop the stack without deleting its named database volume:
+
+```powershell
+docker compose down
+```
+
+### Local Python alternative
+
+Requirements: Python 3.11+ and Docker for FalkorDB. The repository targets Python 3.11; local tests in this checkout were run with Python 3.12.10.
+
+```powershell
+docker compose up -d falkordb
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m pytest -q
+python -m scripts.run_demo
+uvicorn app.main:app --reload
 ```
 
-The local FalkorDB Browser is at `http://localhost:3000`. To create the two synthetic tenant graphs, run `python -m scripts.seed`.
+Open [http://localhost:8000](http://localhost:8000). To seed two synthetic tenant graphs for inspection, run `python -m scripts.seed`.
 
-Run the mock demo:
+### Demo commands
+
+Run a mock demo, which stops for human approval:
 
 ```powershell
 python -m scripts.run_demo
+```
+
+Approve automatically and run the release task:
+
+```powershell
 python -m scripts.run_demo --auto-approve
 ```
 
-The first command runs the project and stops at the approval gate. The second adds approval and runs the release task.
-
-### Demonstrate detected flaws
-
-The functional flaw makes the generated API accept an empty title; the tester detects the real HTTP response, and the debugger repairs it:
+The functional flaw makes the backend accept an empty title; the tester catches the actual HTTP response and the debugger repairs it:
 
 ```powershell
 python -m scripts.run_demo --flaw --auto-approve
 ```
 
-The security flaw adds a synthetic fake key and wildcard CORS configuration. In PowerShell:
+The security flaw adds a synthetic fake key and wildcard CORS; the static scanner files bugs, then the repair loop fixes them:
 
 ```powershell
 $env:DEMO_FLAW = "security"
@@ -175,36 +281,25 @@ python -m scripts.run_demo --auto-approve
 $env:DEMO_FLAW = "0"
 ```
 
-Or on POSIX shells:
+All demo app HTTP requests target localhost. The security flaw key is fake; neither mode requires a real API key.
 
-```sh
-DEMO_FLAW=security python -m scripts.run_demo --auto-approve
-```
+## Tests and measured results
 
-All generated application HTTP checks use localhost. No real key is used by either flaw mode.
-
-### Start the dashboard
-
-```powershell
-uvicorn app.main:app --reload
-```
-
-Open `http://localhost:8000/`. The page polls the project graph, event feed, and release status every two seconds. Use **Run demo**, **Run demo with flaw**, and **Approve** to follow the flow.
-
-## Tests and load test
-
-The suite contains **31 passing tests**. Integration tests use the real local FalkorDB and delete their temporary graphs; mock/unit coverage does not call a live model provider:
+The current suite has **31 passing tests** and uses real local FalkorDB for graph integration tests; temporary test graphs are deleted. Mock/unit tests do not call a live model provider.
 
 ```powershell
 python -m pytest -q
 ```
 
-Run the default 20-project parallel mock load test with `python -m scripts.load_test`; `--projects` and `--workers` can change its scale. It creates separate project graphs, measures completed task throughput, and removes those temporary graphs. The latest measured run and its output are in [docs/load_test_results.md](./docs/load_test_results.md).
+The 20-project mock load run completed 80 tasks in 11.04 seconds (7.25 tasks/second), with zero failures and no lease recovery. The single-project contention run used 50 worker threads over 500 tasks, with eight query actions in flight: 164.01 successful claims/second, 8.96 ms p95 claim-call latency, zero duplicate claims, 558 reads, and 4,500 writes. These are local measurements, not production capacity claims. Full command output and machine notes are in [docs/load_test_results.md](./docs/load_test_results.md).
 
-## Limitations
+## Limitations and future work
 
-- This is a local hackathon prototype, not a production multi-user service; it has no authentication or authorization.
-- The generated to-do app and its in-memory data are intentionally small and are not durable.
-- The static security scanner uses a short set of pattern checks, not a comprehensive security audit.
-- Background demo runs are process-local and have no persistent job status or distributed worker recovery.
-- The dashboard loads its pinned Cytoscape.js build from a CDN and therefore needs browser access to that CDN.
+- This is a local hackathon prototype; there is no user authentication or authorization.
+- The mock plan and generated app files are canned. A live LLM provider is wired but not validated against external output in this project run.
+- The app under test is a small in-memory to-do API and is not durable.
+- The security scanner checks a narrow set of patterns; it is not a comprehensive audit.
+- `Skill`, `Episode`, and `Review` are declared labels but are not populated by the current demo flow. Some relationship constants are also model-only and unused; see the graph model notes.
+- Dashboard run status is process-local, and there is no distributed worker service or persistent job registry.
+- The dashboard loads pinned Cytoscape.js from a CDN and needs access to that CDN in the browser.
+- Future work: persist richer agent episodes and lessons, add authentication and authorization, broaden security checks, validate more model providers, and benchmark unthrottled concurrency against a suitably configured FalkorDB deployment.
