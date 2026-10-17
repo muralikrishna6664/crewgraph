@@ -88,6 +88,7 @@
     let selectedNodeId = null;
     let hoveredNodeId = null;
     let activeRunId = null;
+    let projectsRefreshVersion = 0;
     const cy = cytoscape({
       container: document.getElementById("graph"),
       elements: [],
@@ -190,7 +191,9 @@
     }
 
     async function refreshProjects(preferred) {
+      const projectRefreshVersion = ++projectsRefreshVersion;
       const names = await request("/projects");
+      if (projectRefreshVersion !== projectsRefreshVersion) return picker.value;
       const current = preferred || picker.value;
       picker.replaceChildren();
       for (const name of names) {
@@ -308,6 +311,7 @@
         });
         activeRunId = started.project_id;
         await refreshProjects(started.project_id);
+        picker.value = started.project_id;
         message.textContent = `Started ${started.project_id}`;
         await refreshProject();
       } catch (error) {
