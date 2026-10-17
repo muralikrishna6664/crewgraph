@@ -194,16 +194,20 @@
       const projectRefreshVersion = ++projectsRefreshVersion;
       const names = await request("/projects");
       if (projectRefreshVersion !== projectsRefreshVersion) return picker.value;
-      const current = preferred || picker.value;
+      const current = preferred || picker.value || activeRunId;
+      const projectNames = [...names];
+      if (current === activeRunId && !projectNames.includes(activeRunId)) {
+        projectNames.push(activeRunId);
+      }
       picker.replaceChildren();
-      for (const name of names) {
+      for (const name of projectNames) {
         const option = document.createElement("option");
         option.value = name;
         option.textContent = name;
         picker.append(option);
       }
-      if (names.includes(current)) picker.value = current;
-      else if (names.length) picker.value = names[0];
+      if (projectNames.includes(current)) picker.value = current;
+      else if (projectNames.length) picker.value = projectNames[0];
       return picker.value;
     }
 
