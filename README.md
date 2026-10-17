@@ -221,6 +221,19 @@ export LLM_API_KEY="your-key"
 
 `LLM_PROVIDER` supports `mock` and `openai`; the latter requires `LLM_MODEL` and `LLM_API_KEY`. Automated tests stub the HTTP transport and use only a synthetic key.
 
+### What each agent actually does
+
+| Agent | Implemented behavior |
+|---|---|
+| Planner | Requests a task DAG, validates JSON, IDs, dependencies, and cycles, then stores it in the project graph. Mock mode returns a fixed four-task DAG. |
+| Backend | Writes the FastAPI to-do API and its API contract as graph-linked artifacts. Mock mode supplies fixed file contents. |
+| Frontend | Reads the API contract from its graph handoff context and writes the page; it never contacts the backend agent. Mock mode supplies fixed page contents. |
+| Tester | Reads the contract, starts the generated API on a free `127.0.0.1` port, and checks real HTTP responses, including invalid input. HTTP results—not an LLM verdict—complete or fail the task. |
+| Security | Scans generated files for the implemented patterns (secrets, wildcard CORS, debug mode, unsafe execution/pickle, and missing POST validation) and records linked findings. It does not call an LLM. |
+| Debugger | Reads open bugs and their source artifacts from graph context, writes a repaired file artifact, and links it as a fix. In mock mode its repair content is canned. The orchestrator retries failed tester or security work at most twice. |
+
+There is no standalone reviewer agent in this implementation; `Review` is only a declared model label.
+
 ## Setup and run
 
 ### Docker one-command setup
