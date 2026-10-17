@@ -193,7 +193,7 @@ Open `http://localhost:8000/`. The page polls the project graph, event feed, and
 
 ## Tests and load test
 
-The suite contains **27 passing tests**. Integration tests use the real local FalkorDB and delete their temporary graphs; mock/unit coverage does not call a live model provider:
+The suite contains **31 passing tests**. Integration tests use the real local FalkorDB and delete their temporary graphs; mock/unit coverage does not call a live model provider:
 
 ```powershell
 python -m pytest -q

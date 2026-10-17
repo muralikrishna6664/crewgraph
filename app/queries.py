@@ -2,8 +2,8 @@
 
 from falkordb.graph import Graph
 from falkordb.node import Node
-from falkordb import FalkorDB
 
+from app.db import get_client
 
 def record_event(
     graph: Graph,
@@ -43,7 +43,7 @@ def record_event(
 
 def list_projects() -> list[str]:
     """Return graph names that contain a Project node."""
-    client = FalkorDB()
+    client = get_client()
     try:
         projects = []
         for graph_name in client.list_graphs():
