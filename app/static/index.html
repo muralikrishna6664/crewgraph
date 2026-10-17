@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrewGraph Dashboard</title>
+  <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+  <style>
+    :root { color-scheme: light; font: 15px system-ui, sans-serif; color: #172033; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f5f9; }
+    header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; background: #18243a; color: white; }
+    header h1 { margin: 0 auto 0 0; font-size: 20px; }
+    button, select { border: 1px solid #c7cfdb; border-radius: 6px; padding: 8px 10px; font: inherit; }
+    button { cursor: pointer; background: white; color: #172033; }
+    button.primary { border-color: #3e68d7; background: #3e68d7; color: white; }
+    button:disabled { cursor: default; opacity: .5; }
+    #release-banner { padding: 10px 20px; background: #e8edf7; }
+    #release-banner.blocked { background: #fff0d8; }
+    #release-banner.allowed { background: #ddf5e7; }
+    main { display: grid; grid-template-columns: minmax(400px, 1fr) minmax(280px, 360px); gap: 14px; padding: 14px; height: calc(100vh - 116px); min-height: 450px; }
+    section, aside { min-height: 0; border: 1px solid #dce2ec; border-radius: 8px; background: white; }
+    #graph { width: 100%; height: 100%; }
+    aside { display: grid; grid-template-rows: minmax(130px, 1fr) minmax(160px, 1fr); }
+    .panel { min-height: 0; overflow: auto; padding: 12px; }
+    .panel + .panel { border-top: 1px solid #dce2ec; }
+    h2 { margin: 0 0 10px; font-size: 16px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+    #events { margin: 0; padding-left: 20px; }
+    #events li { margin: 0 0 9px; overflow-wrap: anywhere; }
+    #message { position: fixed; bottom: 8px; left: 14px; color: #a12424; }
+    @media (max-width: 760px) {
+      header { flex-wrap: wrap; }
+      header h1 { width: 100%; }
+      main { height: auto; grid-template-columns: 1fr; }
+      section { height: 55vh; }
+      aside { height: 50vh; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CrewGraph</h1>
+    <label for="project-picker">Project</label>
+    <select id="project-picker" aria-label="Project"></select>
+    <button id="approve" class="primary">Approve</button>
+    <button id="run-demo">Run demo</button>
+    <button id="run-flaw">Run demo with flaw</button>
+  </header>
+  <div id="release-banner">Select a project to view release status.</div>
+  <main>
+    <section aria-label="Project graph"><div id="graph"></div></section>
+    <aside>
+      <div class="panel">
+        <h2>Selected node</h2>
+        <pre id="details">Click a graph node to inspect it.</pre>
+      </div>
+      <div class="panel">
+        <h2>Recent events</h2>
+        <ol id="events"></ol>
+      </div>
+    </aside>
+  </main>
+  <div id="message" role="status"></div>
+  <script>
+    const picker = document.getElementById("project-picker");
+    const banner = document.getElementById("release-banner");
+    const message = document.getElementById("message");
+    const colors = {
+      Project: "#263a5b", Agent: "#4b86d8", Artifact: "#e6a23c",
+      Bug: "#d64545", Vulnerability: "#c03955", Event: "#9099a8"
+    };
+    const cy = cytoscape({
+      container: document.getElementById("graph"),
+      elements: [],
+      layout: { name: "breadthfirst", directed: true, padding: 28, spacingFactor: 1.1 },
+      style: [
+        {
+          selector: "node",
+          style: {
+            "background-color": element => {
+              const data = element.data();
+              if (colors[data.label]) return colors[data.label];
+              if (data.label === "Task") {
+                return {
+                  done: "#3e9b68", ready: "#e4bc3f", claimed: "#4b86d8",
+                  pending: "#9aa3b2", failed: "#d64545"
+                }[data.status] || "#9aa3b2";
+              }
+              return "#8993a3";
+            },
+            label: element => element.data("title") || element.data("id"),
+            color: "#172033", "text-valign": "bottom", "text-halign": "center",
+            "text-wrap": "wrap", "text-max-width": 150, "font-size": 11,
+            width: 34, height: 34, "border-width": 1, "border-color": "#fff"
+          }
+        },
+        {
+          selector: "edge",
+          style: {
+            width: 2, "line-color": "#aab4c4", "target-arrow-color": "#aab4c4",
+            "target-arrow-shape": "triangle", "curve-style": "bezier",
+            label: "data(type)", "font-size": 8, color: "#667085",
+            "text-background-color": "#fff", "text-background-opacity": 1
+          }
+        }
+      ]
+    });
+
+    cy.on("tap", "node", event => {
+      const node = event.target.data();
+      document.getElementById("details").textContent =
+        JSON.stringify(node.properties || node, null, 2);
+    });
+
+    async function request(path, options) {
+      const response = await fetch(path, options);
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return response.json();
+    }
+
+    async function refreshProjects(preferred) {
+      const names = await request("/projects");
+      const current = preferred || picker.value;
+      picker.replaceChildren();
+      for (const name of names) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        picker.append(option);
+      }
+      if (names.includes(current)) picker.value = current;
+      else if (names.length) picker.value = names[0];
+      return picker.value;
+    }
+
+    async function refreshProject() {
+      const projectId = picker.value;
+      document.getElementById("approve").disabled = !projectId;
+      if (!projectId) {
+        cy.elements().remove();
+        banner.textContent = "No projects yet. Start a demo to create one.";
+        banner.className = "";
+        document.getElementById("events").replaceChildren();
+        return;
+      }
+      const [graph, events, release] = await Promise.all([
+        request(`/projects/${encodeURIComponent(projectId)}/graph`),
+        request(`/projects/${encodeURIComponent(projectId)}/events`),
+        request(`/projects/${encodeURIComponent(projectId)}/release-status`)
+      ]);
+      const nodes = graph.nodes.map(node => ({
+        data: { ...node, id: node.id }
+      }));
+      const edges = graph.edges.map((edge, index) => ({
+        data: {
+          id: `${edge.source}:${edge.type}:${edge.target}:${index}`,
+          source: edge.source, target: edge.target, type: edge.type
+        }
+      }));
+      cy.elements().remove();
+      cy.add([...nodes, ...edges]);
+      cy.layout({ name: "breadthfirst", directed: true, padding: 28 }).run();
+
+      banner.className = release.can_release ? "allowed" : "blocked";
+      banner.textContent = release.can_release
+        ? "Release gate passed."
+        : `Release blocked: ${release.reasons.join("; ")}`;
+      const eventList = document.getElementById("events");
+      eventList.replaceChildren();
+      for (const item of events) {
+        const row = document.createElement("li");
+        const when = new Date(item.ts).toLocaleTimeString();
+        row.textContent = `${when} — ${item.type}${item.task_id ? `: ${item.task_id}` : ""}${item.detail ? ` (${item.detail})` : ""}`;
+        eventList.append(row);
+      }
+    }
+
+    async function startDemo(flaw) {
+      message.textContent = "Starting mock demo…";
+      try {
+        const started = await request("/demo/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ flaw })
+        });
+        await refreshProjects(started.project_id);
+        message.textContent = `Started ${started.project_id}`;
+        await refreshProject();
+      } catch (error) {
+        message.textContent = `Could not start demo: ${error.message}`;
+      }
+    }
+
+    document.getElementById("approve").addEventListener("click", async () => {
+      if (!picker.value) return;
+      try {
+        await request(`/projects/${encodeURIComponent(picker.value)}/approve`, { method: "POST" });
+        await refreshProject();
+      } catch (error) {
+        message.textContent = `Approval failed: ${error.message}`;
+      }
+    });
+    document.getElementById("run-demo").addEventListener("click", () => startDemo(false));
+    document.getElementById("run-flaw").addEventListener("click", () => startDemo(true));
+    picker.addEventListener("change", () => refreshProject().catch(error => {
+      message.textContent = `Could not load project: ${error.message}`;
+    }));
+
+    async function poll() {
+      try {
+        const previous = picker.value;
+        await refreshProjects(previous);
+        await refreshProject();
+        message.textContent = "";
+      } catch (error) {
+        message.textContent = `Dashboard refresh failed: ${error.message}`;
+      }
+    }
+    poll();
+    setInterval(poll, 2000);
+  </script>
+</body>
+</html>

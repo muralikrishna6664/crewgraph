@@ -1,12 +1,81 @@
+import logging
+import os
+from pathlib import Path
+from threading import Lock, Thread
+from uuid import uuid4
+
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from falkordb.graph import Graph
 from falkordb.node import Node
+from pydantic import BaseModel
 from redis.exceptions import ResponseError
 
+from agents.planner import Planner
 from app import queries
 from app.db import get_graph
+from app.orchestrator import run_project
+from app.schema import init_project
 
 app = FastAPI(title="CrewGraph")
+_demo_lock = Lock()
+_demo_request = "build a to-do app with a REST API and a simple web page"
+
+
+class DemoRunRequest(BaseModel):
+    """Options for starting a local mock demo."""
+
+    flaw: bool = False
+
+
+@app.get("/")
+def dashboard() -> FileResponse:
+    """Serve the single-file Cytoscape dashboard."""
+    page = Path(__file__).parent / "static" / "index.html"
+    return FileResponse(page, media_type="text/html")
+
+
+def _run_demo(project_id: str, flaw: bool) -> None:
+    """Plan and run a mock project in an isolated background thread."""
+    with _demo_lock:
+        previous_provider = os.environ.get("LLM_PROVIDER")
+        previous_flaw = os.environ.get("DEMO_FLAW")
+        os.environ["LLM_PROVIDER"] = "mock"
+        os.environ["DEMO_FLAW"] = "1" if flaw else "0"
+        try:
+            graph = init_project(project_id)
+            queries.create_project(graph, project_id)
+            tasks = Planner().plan(_demo_request, graph)
+            queries.link_tasks_to_project(
+                graph, project_id, [task["id"] for task in tasks]
+            )
+            run_project(graph)
+        except Exception:
+            logging.exception("Demo run failed for project %s", project_id)
+            raise
+        finally:
+            if previous_provider is None:
+                os.environ.pop("LLM_PROVIDER", None)
+            else:
+                os.environ["LLM_PROVIDER"] = previous_provider
+            if previous_flaw is None:
+                os.environ.pop("DEMO_FLAW", None)
+            else:
+                os.environ["DEMO_FLAW"] = previous_flaw
+
+
+@app.post("/demo/run", status_code=202)
+def start_demo(request: DemoRunRequest) -> dict[str, str]:
+    """Start a mock demo run in a background thread and return its project ID."""
+    project_id = f"dashboard_demo_{uuid4().hex[:12]}"
+    thread = Thread(
+        target=_run_demo,
+        args=(project_id, request.flaw),
+        name=f"crewgraph-demo-{project_id}",
+        daemon=True,
+    )
+    thread.start()
+    return {"project_id": project_id, "status": "started"}
 
 
 @app.get("/health")
@@ -114,6 +183,7 @@ def approve_project(project_id: str) -> dict[str, object]:
         approval = queries.approve_project(graph, project_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    run_project(graph)
     return {"project_id": project_id, "status": approval.properties["status"]}
 
 
