@@ -49,6 +49,8 @@ def test_project_graph_and_events_endpoints_return_persisted_data() -> None:
         assert task["label"] == "Task"
         assert task["title"] == "Build service"
         assert task["status"] == "done"
+        bug_node = next(node for node in graph_data["nodes"] if node["id"] == "bug-1")
+        assert bug_node["status"] == "fixed"
         assert {"source": "task-1", "target": project_id, "type": "PART_OF"} in (
             graph_data["edges"]
         )

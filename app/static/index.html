@@ -18,14 +18,19 @@
     #release-banner { padding: 10px 20px; background: #e8edf7; }
     #release-banner.blocked { background: #fff0d8; }
     #release-banner.allowed { background: #ddf5e7; }
-    main { display: grid; grid-template-columns: minmax(400px, 1fr) minmax(280px, 360px); gap: 14px; padding: 14px; height: calc(100vh - 116px); min-height: 450px; }
+    #legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 20px; background: white; border-bottom: 1px solid #dce2ec; font-size: 12px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+    .legend-swatch { width: 12px; height: 12px; border-radius: 50%; }
+    main { display: grid; grid-template-columns: minmax(400px, 1fr) minmax(280px, 360px); gap: 14px; padding: 14px; height: calc(100vh - 154px); min-height: 450px; }
     section, aside { min-height: 0; border: 1px solid #dce2ec; border-radius: 8px; background: white; }
     #graph { width: 100%; height: 100%; }
     aside { display: grid; grid-template-rows: minmax(130px, 1fr) minmax(160px, 1fr); }
     .panel { min-height: 0; overflow: auto; padding: 12px; }
     .panel + .panel { border-top: 1px solid #dce2ec; }
     h2 { margin: 0 0 10px; font-size: 16px; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+    #details { display: grid; grid-template-columns: minmax(85px, auto) 1fr; gap: 6px 10px; margin: 0; font-size: 13px; }
+    #details dt { font-weight: 650; overflow-wrap: anywhere; }
+    #details dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
     #events { margin: 0; padding-left: 20px; }
     #events li { margin: 0 0 9px; overflow-wrap: anywhere; }
     #message { position: fixed; bottom: 8px; left: 14px; color: #a12424; }
@@ -48,12 +53,21 @@
     <button id="run-flaw">Run demo with flaw</button>
   </header>
   <div id="release-banner">Select a project to view release status.</div>
+  <div id="legend" aria-label="Graph legend">
+    <span class="legend-item"><i class="legend-swatch" style="background:#3e9b68"></i>Task done</span>
+    <span class="legend-item"><i class="legend-swatch" style="background:#e4bc3f"></i>Task ready</span>
+    <span class="legend-item"><i class="legend-swatch" style="background:#4b86d8"></i>Task claimed / Agent</span>
+    <span class="legend-item"><i class="legend-swatch" style="background:#9aa3b2"></i>Task pending</span>
+    <span class="legend-item"><i class="legend-swatch" style="background:#d64545"></i>Bug open</span>
+    <span class="legend-item"><i class="legend-swatch" style="background:#3e9b68"></i>Bug fixed</span>
+    <span class="legend-item"><i class="legend-swatch" style="background:#e6a23c"></i>Artifact</span>
+  </div>
   <main>
     <section aria-label="Project graph"><div id="graph"></div></section>
     <aside>
       <div class="panel">
         <h2>Selected node</h2>
-        <pre id="details">Click a graph node to inspect it.</pre>
+        <dl id="details"><dt>Node</dt><dd>Click a graph node to inspect it.</dd></dl>
       </div>
       <div class="panel">
         <h2>Recent events</h2>
@@ -68,8 +82,11 @@
     const message = document.getElementById("message");
     const colors = {
       Project: "#263a5b", Agent: "#4b86d8", Artifact: "#e6a23c",
-      Bug: "#d64545", Vulnerability: "#c03955", Event: "#9099a8"
+      Vulnerability: "#c03955", Event: "#9099a8"
     };
+    let lastNodeIds = null;
+    let selectedNodeId = null;
+    let hoveredNodeId = null;
     const cy = cytoscape({
       container: document.getElementById("graph"),
       elements: [],
@@ -80,6 +97,9 @@
           style: {
             "background-color": element => {
               const data = element.data();
+              if (data.label === "Bug") {
+                return data.status === "fixed" ? "#3e9b68" : "#d64545";
+              }
               if (colors[data.label]) return colors[data.label];
               if (data.label === "Task") {
                 return {
@@ -89,10 +109,10 @@
               }
               return "#8993a3";
             },
-            label: element => element.data("title") || element.data("id"),
+            label: "title",
             color: "#172033", "text-valign": "bottom", "text-halign": "center",
-            "text-wrap": "wrap", "text-max-width": 150, "font-size": 11,
-            width: 34, height: 34, "border-width": 1, "border-color": "#fff"
+            "text-wrap": "wrap", "text-max-width": 120, "font-size": 12,
+            width: 40, height: 40, "border-width": 1, "border-color": "#fff"
           }
         },
         {
@@ -100,18 +120,54 @@
           style: {
             width: 2, "line-color": "#aab4c4", "target-arrow-color": "#aab4c4",
             "target-arrow-shape": "triangle", "curve-style": "bezier",
-            label: "data(type)", "font-size": 8, color: "#667085",
+            label: "", "font-size": 9, color: "#667085",
             "text-background-color": "#fff", "text-background-opacity": 1
           }
+        },
+        {
+          selector: "edge.edge-visible",
+          style: { label: "data(type)" }
         }
       ]
     });
 
     cy.on("tap", "node", event => {
-      const node = event.target.data();
-      document.getElementById("details").textContent =
-        JSON.stringify(node.properties || node, null, 2);
+      const node = event.target;
+      if (selectedNodeId) cy.$id(selectedNodeId).unselect();
+      node.select();
+      selectedNodeId = node.id();
+      showNodeDetails(node.data());
+      showNodeEdges(hoveredNodeId || selectedNodeId);
     });
+
+    cy.on("mouseover", "node", event => {
+      hoveredNodeId = event.target.id();
+      showNodeEdges(hoveredNodeId);
+    });
+
+    cy.on("mouseout", "node", () => {
+      hoveredNodeId = null;
+      showNodeEdges(selectedNodeId);
+    });
+
+    function showNodeDetails(data) {
+      const details = document.getElementById("details");
+      details.replaceChildren();
+      for (const [key, value] of Object.entries(data.properties || {})) {
+        const name = document.createElement("dt");
+        name.textContent = key;
+        const content = document.createElement("dd");
+        content.textContent = typeof value === "object"
+          ? JSON.stringify(value, null, 2)
+          : String(value);
+        details.append(name, content);
+      }
+    }
+
+    function showNodeEdges(nodeId) {
+      cy.edges().removeClass("edge-visible");
+      if (nodeId) cy.$id(nodeId).connectedEdges().addClass("edge-visible");
+    }
 
     async function request(path, options) {
       const response = await fetch(path, options);
@@ -139,6 +195,10 @@
       document.getElementById("approve").disabled = !projectId;
       if (!projectId) {
         cy.elements().remove();
+        lastNodeIds = null;
+        selectedNodeId = null;
+        document.getElementById("details").innerHTML =
+          "<dt>Node</dt><dd>Click a graph node to inspect it.</dd>";
         banner.textContent = "No projects yet. Start a demo to create one.";
         banner.className = "";
         document.getElementById("events").replaceChildren();
@@ -150,17 +210,40 @@
         request(`/projects/${encodeURIComponent(projectId)}/release-status`)
       ]);
       const nodes = graph.nodes.map(node => ({
-        data: { ...node, id: node.id }
+        ...node,
+        title: String(node.title || node.path || node.name || node.id).slice(0, 36)
       }));
-      const edges = graph.edges.map((edge, index) => ({
+      const edges = graph.edges.map(edge => ({
         data: {
-          id: `${edge.source}:${edge.type}:${edge.target}:${index}`,
+          id: `${edge.source}:${edge.type}:${edge.target}`,
           source: edge.source, target: edge.target, type: edge.type
         }
       }));
-      cy.elements().remove();
-      cy.add([...nodes, ...edges]);
-      cy.layout({ name: "breadthfirst", directed: true, padding: 28 }).run();
+      const nodeIds = nodes.map(node => node.id).sort();
+      const nodeIdsKey = JSON.stringify(nodeIds);
+      if (nodeIdsKey !== lastNodeIds) {
+        cy.elements().remove();
+        cy.add([
+          ...nodes.map(node => ({ data: node })),
+          ...edges
+        ]);
+        const layout = cy.layout({
+          name: "breadthfirst", directed: true, padding: 28, spacingFactor: 1.1
+        });
+        layout.one("layoutstop", () => cy.fit(cy.elements(), 28));
+        layout.run();
+        lastNodeIds = nodeIdsKey;
+        selectedNodeId = null;
+      } else {
+        for (const nodeData of nodes) {
+          cy.$id(nodeData.id).data(nodeData);
+        }
+        const newEdgeIds = new Set(edges.map(edge => edge.data.id));
+        cy.edges().filter(edge => !newEdgeIds.has(edge.id())).remove();
+        const existingEdgeIds = new Set(cy.edges().map(edge => edge.id()));
+        cy.add(edges.filter(edge => !existingEdgeIds.has(edge.data.id)));
+      }
+      showNodeEdges(hoveredNodeId || selectedNodeId);
 
       banner.className = release.can_release ? "allowed" : "blocked";
       banner.textContent = release.can_release

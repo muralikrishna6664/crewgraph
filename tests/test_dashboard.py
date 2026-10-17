@@ -12,6 +12,14 @@ def test_dashboard_root_serves_single_page() -> None:
     assert "text/html" in response.headers["content-type"]
     assert "cytoscape@3.30.4" in response.text
     assert "Run demo with flaw" in response.text
+    assert 'name: "breadthfirst", directed: true' in response.text
+    assert 'width: 40, height: 40' in response.text
+    assert '"text-wrap": "wrap", "text-max-width": 120, "font-size": 12' in response.text
+    assert 'label: ""' in response.text
+    assert 'selector: "edge.edge-visible"' in response.text
+    assert "nodeIdsKey !== lastNodeIds" in response.text
+    assert 'cy.fit(cy.elements(), 28)' in response.text
+    assert 'id="legend"' in response.text
 
 
 def test_demo_endpoint_starts_a_background_run(monkeypatch) -> None:
