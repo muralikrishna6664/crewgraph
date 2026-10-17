@@ -11,6 +11,7 @@ def test_dashboard_root_serves_single_page() -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "cytoscape@3.30.4" in response.text
+    assert 'banner.textContent = "No projects yet. Click Run demo."' in response.text
     assert "Run demo with flaw" in response.text
     assert 'name: "breadthfirst", directed: true' in response.text
     assert 'direction: "TB"' in response.text
