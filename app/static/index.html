@@ -87,6 +87,7 @@
     let lastNodeIds = null;
     let selectedNodeId = null;
     let hoveredNodeId = null;
+    let activeRunId = null;
     const cy = cytoscape({
       container: document.getElementById("graph"),
       elements: [],
@@ -216,10 +217,13 @@
         document.getElementById("events").replaceChildren();
         return;
       }
-      const [graph, events, release] = await Promise.all([
+      const [graph, events, release, run] = await Promise.all([
         request(`/projects/${encodeURIComponent(projectId)}/graph`),
         request(`/projects/${encodeURIComponent(projectId)}/events`),
-        request(`/projects/${encodeURIComponent(projectId)}/release-status`)
+        request(`/projects/${encodeURIComponent(projectId)}/release-status`),
+        projectId === activeRunId
+          ? request(`/demo/runs/${encodeURIComponent(projectId)}`)
+          : Promise.resolve(null)
       ]);
       const nodes = graph.nodes.map(node => {
         const properties = node.properties || {};
@@ -268,7 +272,11 @@
       banner.className = release.released
         ? "allowed"
         : release.can_release ? "allowed" : "blocked";
-      if (release.released) {
+      if (run && run.status === "failed") {
+        banner.textContent = `Run failed: ${run.message}`;
+      } else if (run && run.status === "running") {
+        banner.textContent = "Running...";
+      } else if (release.released) {
         banner.textContent = "Released.";
       } else if (
         release.reasons.length === 1
@@ -298,6 +306,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ flaw })
         });
+        activeRunId = started.project_id;
         await refreshProjects(started.project_id);
         message.textContent = `Started ${started.project_id}`;
         await refreshProject();

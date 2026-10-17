@@ -19,6 +19,8 @@ from app.schema import init_project
 
 app = FastAPI(title="CrewGraph")
 _demo_lock = Lock()
+_demo_runs_lock = Lock()
+_demo_runs: dict[str, dict[str, str]] = {}
 _demo_request = "build a to-do app with a REST API and a simple web page"
 
 
@@ -65,25 +67,33 @@ def _prepare_demo(project_id: str, flaw: bool) -> None:
 
 def _run_demo(project_id: str, flaw: bool) -> None:
     """Run a prepared mock project in an isolated background thread."""
-    with _demo_lock:
-        previous_provider = os.environ.get("LLM_PROVIDER")
-        previous_flaw = os.environ.get("DEMO_FLAW")
-        os.environ["LLM_PROVIDER"] = "mock"
-        os.environ["DEMO_FLAW"] = "1" if flaw else "0"
-        try:
-            run_project(init_project(project_id))
-        except Exception:
-            logging.exception("Demo run failed for project %s", project_id)
-            raise
-        finally:
-            if previous_provider is None:
-                os.environ.pop("LLM_PROVIDER", None)
-            else:
-                os.environ["LLM_PROVIDER"] = previous_provider
-            if previous_flaw is None:
-                os.environ.pop("DEMO_FLAW", None)
-            else:
-                os.environ["DEMO_FLAW"] = previous_flaw
+    try:
+        with _demo_lock:
+            previous_provider = os.environ.get("LLM_PROVIDER")
+            previous_flaw = os.environ.get("DEMO_FLAW")
+            os.environ["LLM_PROVIDER"] = "mock"
+            os.environ["DEMO_FLAW"] = "1" if flaw else "0"
+            try:
+                run_project(init_project(project_id))
+            finally:
+                if previous_provider is None:
+                    os.environ.pop("LLM_PROVIDER", None)
+                else:
+                    os.environ["LLM_PROVIDER"] = previous_provider
+                if previous_flaw is None:
+                    os.environ.pop("DEMO_FLAW", None)
+                else:
+                    os.environ["DEMO_FLAW"] = previous_flaw
+    except Exception as error:
+        logging.exception("Demo run failed for project %s", project_id)
+        with _demo_runs_lock:
+            _demo_runs[project_id] = {
+                "status": "failed",
+                "message": str(error) or type(error).__name__,
+            }
+    else:
+        with _demo_runs_lock:
+            _demo_runs[project_id] = {"status": "finished", "message": ""}
 
 
 @app.post("/demo/run", status_code=202)
@@ -91,6 +101,8 @@ def start_demo(request: DemoRunRequest) -> dict[str, str]:
     """Start a mock demo run in a background thread and return its project ID."""
     project_id = f"dashboard_demo_{uuid4().hex[:12]}"
     _prepare_demo(project_id, request.flaw)
+    with _demo_runs_lock:
+        _demo_runs[project_id] = {"status": "running", "message": ""}
     thread = Thread(
         target=_run_demo,
         args=(project_id, request.flaw),
@@ -99,6 +111,16 @@ def start_demo(request: DemoRunRequest) -> dict[str, str]:
     )
     thread.start()
     return {"project_id": project_id, "status": "started"}
+
+
+@app.get("/demo/runs/{project_id}")
+def demo_run_status(project_id: str) -> dict[str, str]:
+    """Return the in-process status and any error for a dashboard demo run."""
+    with _demo_runs_lock:
+        status = _demo_runs.get(project_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Demo run not found")
+    return {"project_id": project_id, **status}
 
 
 @app.get("/health")

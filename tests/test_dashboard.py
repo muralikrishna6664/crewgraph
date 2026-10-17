@@ -31,6 +31,8 @@ def test_dashboard_root_serves_single_page() -> None:
     assert 'release.reasons[0] === "Human approval is required"' in response.text
     assert 'banner.textContent = "Human approval is required"' in response.text
     assert 'banner.textContent = "Released."' in response.text
+    assert 'banner.textContent = "Running..."' in response.text
+    assert "Run failed: ${run.message}" in response.text
 
 
 def test_demo_endpoint_starts_a_background_run(monkeypatch) -> None:
@@ -56,3 +58,30 @@ def test_demo_endpoint_starts_a_background_run(monkeypatch) -> None:
     assert captured["project_id"] == response.json()["project_id"]
     assert captured["flaw"] is True
     assert captured["prepared"] == (response.json()["project_id"], True)
+    run_status = TestClient(main.app).get(
+        f"/demo/runs/{response.json()['project_id']}"
+    )
+    assert run_status.status_code == 200
+    assert run_status.json()["status"] == "running"
+
+
+def test_demo_run_failure_is_logged_and_reported(monkeypatch, caplog) -> None:
+    project_id = "test-dashboard-run-failure"
+
+    def fail_run(graph) -> None:
+        raise RuntimeError("synthetic run failure")
+
+    monkeypatch.setattr(main, "init_project", lambda _: object())
+    monkeypatch.setattr(main, "run_project", fail_run)
+
+    main._run_demo(project_id, True)
+
+    response = TestClient(main.app).get(f"/demo/runs/{project_id}")
+    assert response.status_code == 200
+    assert response.json() == {
+        "project_id": project_id,
+        "status": "failed",
+        "message": "synthetic run failure",
+    }
+    assert "Demo run failed for project test-dashboard-run-failure" in caplog.text
+    assert "Traceback" in caplog.text
