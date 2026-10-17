@@ -1,8 +1,20 @@
 # CrewGraph
 
-CrewGraph is a prototype for coordinating software-building agents through a shared FalkorDB knowledge graph. Each project has its own graph, where task dependencies, claims, handoffs, artifacts, bugs, approvals, and events are persisted. Its mock planner and workers can build and test a small to-do API entirely on localhost without an LLM API key.
+CrewGraph is a prototype for coordinating software-building agents through a shared FalkorDB knowledge graph. Each project has its own graph, where task dependencies, claims, handoffs, artifacts, bugs, approvals, and events are persisted. It runs in mock LLM mode by default, without an API key; in this mode the planner DAG and worker file contents are canned fixtures, not live model output.
 
 Agents never call one another directly: they read and write shared project state in FalkorDB. The orchestrator uses those graph facts to decide what can run, who can claim it, what evidence downstream work receives, and whether release is allowed.
+
+The graph scheduling, atomic claims, localhost HTTP endpoint checks, static security checks, bug/artifact links, and approval-based release gate are real application behavior. Planning and generated file contents are canned in mock mode. A real provider is available through the OpenAI Chat Completions API; its live output is not exercised by the automated suite.
+
+To use that provider, configure your own model and key in the shell (do not commit the key). The implementation requires all three variables:
+
+```powershell
+$env:LLM_PROVIDER = "openai"
+$env:LLM_MODEL = "<supported-model>"
+$env:LLM_API_KEY = "<your API key>"
+```
+
+The equivalent POSIX shell settings are `export LLM_PROVIDER=openai`, `export LLM_MODEL=<supported-model>`, and `export LLM_API_KEY=<your API key>`. The default `LLM_PROVIDER=mock` does not make network calls.
 
 ## Architecture
 
@@ -181,7 +193,7 @@ Open `http://localhost:8000/`. The page polls the project graph, event feed, and
 
 ## Tests and load test
 
-The integration tests use the real local FalkorDB and delete their temporary graphs afterward. The current suite contains **23 passing tests**:
+The suite contains **27 passing tests**. Integration tests use the real local FalkorDB and delete their temporary graphs; mock/unit coverage does not call a live model provider:
 
 ```powershell
 python -m pytest -q

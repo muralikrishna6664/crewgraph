@@ -19,6 +19,45 @@ def test_mock_provider_returns_canned_dag_and_token_counts(monkeypatch) -> None:
     assert response.output_tokens > 0
 
 
+def test_openai_provider_sends_configured_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    monkeypatch.setenv("LLM_API_KEY", "synthetic-test-key")
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [{"message": {"content": "{}"}}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("agents.llm.urlopen", fake_urlopen)
+
+    response = call("Return JSON", "Plan a task")
+
+    assert captured == {
+        "authorization": "Bearer synthetic-test-key",
+        "timeout": 60,
+    }
+    assert response.text == "{}"
+    assert response.input_tokens == 2
+    assert response.output_tokens == 1
+
+
 def test_validate_dag_rejects_cycles() -> None:
     dag = {
         "tasks": [
