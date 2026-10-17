@@ -112,7 +112,7 @@
               }
               return "#8993a3";
             },
-            label: "title",
+            label: "data(title)",
             color: "#172033", "text-valign": "bottom", "text-halign": "center",
             "text-wrap": "wrap", "text-max-width": 120, "font-size": 12,
             width: 40, height: 40, "border-width": 1, "border-color": "#fff"
@@ -221,10 +221,17 @@
         request(`/projects/${encodeURIComponent(projectId)}/events`),
         request(`/projects/${encodeURIComponent(projectId)}/release-status`)
       ]);
-      const nodes = graph.nodes.map(node => ({
-        ...node,
-        title: String(node.title || node.path || node.name || node.id).slice(0, 36)
-      }));
+      const nodes = graph.nodes.map(node => {
+        const properties = node.properties || {};
+        const label = {
+          Task: properties.title,
+          Artifact: properties.path,
+          Agent: properties.name,
+          Bug: properties.title,
+          Project: properties.name
+        }[node.label] || node.title || node.id;
+        return { ...node, title: String(label).slice(0, 24) };
+      });
       const edges = graph.edges.map(edge => ({
         data: {
           id: `${edge.source}:${edge.type}:${edge.target}`,

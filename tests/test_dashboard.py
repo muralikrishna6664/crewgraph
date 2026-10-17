@@ -16,6 +16,13 @@ def test_dashboard_root_serves_single_page() -> None:
     assert 'direction: "TB"' in response.text
     assert 'width: 40, height: 40' in response.text
     assert '"text-wrap": "wrap", "text-max-width": 120, "font-size": 12' in response.text
+    assert 'label: "data(title)"' in response.text
+    assert "Task: properties.title" in response.text
+    assert "Artifact: properties.path" in response.text
+    assert "Agent: properties.name" in response.text
+    assert "Bug: properties.title" in response.text
+    assert "Project: properties.name" in response.text
+    assert "String(label).slice(0, 24)" in response.text
     assert 'label: ""' in response.text
     assert 'selector: "edge.edge-visible"' in response.text
     assert "nodeIdsKey !== lastNodeIds" in response.text
