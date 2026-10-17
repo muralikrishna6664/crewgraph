@@ -242,7 +242,7 @@ Requirements: Docker with Compose.
 
 #### Persistence investigation (baseline before the fix)
 
-In the original Compose configuration, a demo project disappeared after `docker compose down` and `docker compose up -d`. Inspection showed Redis `appendonly` was `no`, and its active data directory was `/var/lib/falkordb/data`, while the Compose named volume was mounted at `/data`. Thus Redis wrote outside the mounted volume, and the default snapshot policy did not guarantee a snapshot for the small demo before the container was removed. The following persistence configuration fixes both the durability setting and the mount path.
+In the original Compose configuration, a demo project disappeared after `docker compose down` and `docker compose up -d`. Inspection showed Redis `appendonly` was `no`, and its active data directory was `/var/lib/falkordb/data`, while the Compose named volume was mounted at `/data`. Thus Redis wrote outside the mounted volume, and the default snapshot policy did not guarantee a snapshot for the small demo before the container was removed. The Compose setup now aligns the image's `FALKORDB_DATA_PATH` with `/data` and enables AOF plus Redis snapshots through the image's documented `REDIS_ARGS` startup arguments. See the official image [`run.sh`](https://github.com/FalkorDB/FalkorDB/blob/master/build/runtime/run.sh) and [`Dockerfile`](https://github.com/FalkorDB/FalkorDB/blob/master/build/runtime/Dockerfile).
 
 ```powershell
 docker compose up -d --build
@@ -253,6 +253,10 @@ The API waits for a healthy FalkorDB service, uses `FALKORDB_HOST=falkordb`, and
 ```powershell
 docker compose down
 ```
+
+The database files live under `/data` in the container, backed by the explicitly named Docker volume **`crewgraph_falkordb_data`**. The volume survives container recreation and `docker compose down`. **Do not run `docker compose down -v` unless you intend to permanently delete all persisted FalkorDB graph data**; `-v` removes this named volume.
+
+To verify the repair flow and persistence on a running local stack, run `python -m scripts.check_persistence`. It creates a synthetic flawed demo, restarts only the `falkordb` service, checks the project graph, and leaves that project in the database.
 
 ### Local Python alternative
 
