@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from redis.exceptions import ResponseError
 
 from agents.planner import Planner
+from agents.worker import _workspace_path
 from app import queries
 from app.db import get_graph
 from app.orchestrator import run_project
@@ -23,33 +24,45 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 _demo_lock = Lock()
 _demo_runs_lock = Lock()
 _demo_runs: dict[str, dict[str, str]] = {}
-_demo_request = "build a to-do app with a REST API and a simple web page"
+_max_artifact_size = 256 * 1024
+_default_prompt = "build a to-do app with a REST API and a simple web page"
 
 
 class DemoRunRequest(BaseModel):
-    """Options for starting a local mock demo."""
+    """Options for starting a generated project run."""
 
+    prompt: str = _default_prompt
     flaw: bool = False
 
 
 @app.get("/")
 def dashboard() -> FileResponse:
-    """Serve the single-file Cytoscape dashboard."""
+    """Serve the CrewGraph dashboard."""
     page = Path(__file__).parent / "static" / "index.html"
     return FileResponse(page, media_type="text/html")
 
 
-def _prepare_demo(project_id: str, flaw: bool) -> None:
-    """Persist the mock plan before returning a project ID to the dashboard."""
+@app.get("/config")
+def public_config() -> dict[str, str]:
+    """Return the configured model mode for the dashboard badge."""
+    provider = os.environ.get("LLM_PROVIDER", "mock").lower()
+    if provider == "mock":
+        return {"llm_mode": "Mock LLM mode"}
+    if provider == "openai":
+        return {"llm_mode": "Live LLM"}
+    raise HTTPException(status_code=503, detail=f"Unsupported LLM_PROVIDER: {provider}")
+
+
+def _prepare_demo(project_id: str, prompt: str, flaw: bool) -> None:
+    """Persist the requested plan before returning its project ID."""
     with _demo_lock:
-        previous_provider = os.environ.get("LLM_PROVIDER")
         previous_flaw = os.environ.get("DEMO_FLAW")
-        os.environ["LLM_PROVIDER"] = "mock"
         os.environ["DEMO_FLAW"] = "1" if flaw else "0"
         try:
             graph = init_project(project_id)
             queries.create_project(graph, project_id)
-            tasks = Planner().plan(_demo_request, graph)
+            queries.update_project_prompt(graph, project_id, prompt)
+            tasks = Planner().plan(prompt, graph)
             queries.link_tasks_to_project(
                 graph, project_id, [task["id"] for task in tasks]
             )
@@ -57,10 +70,6 @@ def _prepare_demo(project_id: str, flaw: bool) -> None:
             logging.exception("Demo preparation failed for project %s", project_id)
             raise
         finally:
-            if previous_provider is None:
-                os.environ.pop("LLM_PROVIDER", None)
-            else:
-                os.environ["LLM_PROVIDER"] = previous_provider
             if previous_flaw is None:
                 os.environ.pop("DEMO_FLAW", None)
             else:
@@ -68,20 +77,14 @@ def _prepare_demo(project_id: str, flaw: bool) -> None:
 
 
 def _run_demo(project_id: str, flaw: bool) -> None:
-    """Run a prepared mock project in an isolated background thread."""
+    """Run a prepared project in an isolated background thread."""
     try:
         with _demo_lock:
-            previous_provider = os.environ.get("LLM_PROVIDER")
             previous_flaw = os.environ.get("DEMO_FLAW")
-            os.environ["LLM_PROVIDER"] = "mock"
             os.environ["DEMO_FLAW"] = "1" if flaw else "0"
             try:
                 run_project(init_project(project_id))
             finally:
-                if previous_provider is None:
-                    os.environ.pop("LLM_PROVIDER", None)
-                else:
-                    os.environ["LLM_PROVIDER"] = previous_provider
                 if previous_flaw is None:
                     os.environ.pop("DEMO_FLAW", None)
                 else:
@@ -100,12 +103,12 @@ def _run_demo(project_id: str, flaw: bool) -> None:
 
 @app.post("/demo/run", status_code=202)
 def start_demo(request: DemoRunRequest) -> dict[str, str]:
-    """Start a mock demo run in a background thread and return its project ID."""
+    """Plan and start a build request in a background thread."""
     project_id = f"dashboard_demo_{uuid4().hex[:12]}"
     with _demo_runs_lock:
         _demo_runs[project_id] = {"status": "starting", "message": ""}
     try:
-        _prepare_demo(project_id, request.flaw)
+        _prepare_demo(project_id, request.prompt, request.flaw)
     except Exception as error:
         logging.exception("Demo preparation failed for project %s", project_id)
         with _demo_runs_lock:
@@ -219,7 +222,64 @@ def project_graph(project_id: str) -> dict[str, object]:
         for source, relationship, target in queries.graph_edges(graph)
         if "Event" not in source.labels and "Event" not in target.labels
     ]
-    return {"nodes": node_records, "edges": edge_records}
+    project = next(
+        node
+        for node in nodes
+        if "Project" in node.labels and node.properties.get("id") == project_id
+    )
+    project_properties = project.properties
+    prompt = project_properties.get("prompt")
+    tasks = [node for node in node_records if node["label"] == "Task"]
+    dependency_edges = [
+        edge for edge in edge_records if edge["type"] == "DEPENDS_ON"
+    ]
+    tasks_with_dependencies = {
+        str(edge["source"]) for edge in dependency_edges
+    }
+    depended_on_tasks = {str(edge["target"]) for edge in dependency_edges}
+    prompt_node_id = f"prompt:{project_id}"
+    output_node_id = f"output:{project_id}"
+    prompt_node = {
+        "label": "Prompt",
+        "id": prompt_node_id,
+        "title": "Prompt",
+        "status": None,
+        "severity": None,
+        "properties": {"prompt": prompt if isinstance(prompt, str) else ""},
+    }
+    release = queries.release_status(graph, project_id)
+    output_status = "released" if release["released"] else "pending"
+    output_node = {
+        "label": "Output",
+        "id": output_node_id,
+        "title": "Output",
+        "status": output_status,
+        "severity": None,
+        "properties": {"status": output_status},
+    }
+    frame_edges = [
+        {
+            "source": prompt_node_id,
+            "target": str(task["id"]),
+            "type": "STARTS",
+        }
+        for task in tasks
+        if str(task["id"]) not in tasks_with_dependencies
+    ] + [
+        {
+            "source": str(task["id"]),
+            "target": output_node_id,
+            "type": "OUTPUTS",
+        }
+        for task in tasks
+        if str(task["id"]) not in depended_on_tasks
+    ]
+    if not tasks:
+        frame_edges = [{"source": prompt_node_id, "target": output_node_id, "type": "STARTS"}]
+    return {
+        "nodes": [*node_records, prompt_node, output_node],
+        "edges": [*edge_records, *frame_edges],
+    }
 
 
 @app.get("/projects/{project_id}/events")
@@ -228,7 +288,71 @@ def project_events(project_id: str) -> list[dict[str, object]]:
     graph, _, starting = _project_nodes(project_id)
     if starting:
         return []
-    return [event.properties for event in queries.recent_events(graph)]
+    return [event.properties for event in queries.project_events(graph)]
+
+
+@app.get("/projects/{project_id}/artifacts")
+def project_artifacts(project_id: str) -> list[dict[str, object]]:
+    """List graph-backed project files with their version and producing agents."""
+    graph, _, starting = _project_nodes(project_id)
+    if starting:
+        return []
+    artifact_items = queries.task_artifacts(graph)
+    artifact_items.sort(
+        key=lambda item: (
+            int(item["artifact"].get("ts", 0)),
+            str(item["artifact"].get("path", "")),
+        )
+    )
+    versions: dict[str, int] = {}
+    records: list[dict[str, object]] = []
+    for item in artifact_items:
+        artifact = item["artifact"]
+        path = str(artifact.get("path", ""))
+        versions[path] = versions.get(path, 0) + 1
+        records.append(
+            {
+                "id": artifact.get("id"),
+                "path": path,
+                "version": versions[path],
+                "agents": item["agents"],
+                "ts": artifact.get("ts"),
+            }
+        )
+    return records
+
+
+@app.get("/projects/{project_id}/artifacts/{artifact_id:path}")
+def project_artifact(project_id: str, artifact_id: str) -> dict[str, object]:
+    """Read a bounded workspace file only when it is registered in this graph."""
+    graph, _, starting = _project_nodes(project_id)
+    if starting:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = queries.artifact_by_id(graph, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    relative_path = artifact.properties.get("path")
+    if not isinstance(relative_path, str):
+        raise HTTPException(status_code=404, detail="Artifact path is unavailable")
+    try:
+        path = _workspace_path(project_id, relative_path)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Unsafe artifact path") from error
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found")
+    size = path.stat().st_size
+    if size > _max_artifact_size:
+        raise HTTPException(status_code=413, detail="Artifact exceeds the preview size limit")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise HTTPException(status_code=415, detail="Artifact is not UTF-8 text") from error
+    return {
+        "id": artifact.properties.get("id"),
+        "path": relative_path,
+        "size": size,
+        "content": content,
+    }
 
 
 @app.get("/projects/{project_id}/tasks/{task_id}/context")

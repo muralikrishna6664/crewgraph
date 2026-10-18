@@ -10,12 +10,18 @@
 <body>
   <header>
     <h1>CrewGraph</h1>
+    <span id="llm-badge" class="llm-badge">Loading model mode…</span>
     <label for="project-picker">Project</label>
     <select id="project-picker" aria-label="Project"></select>
+    <button id="replay-events" type="button" disabled>Replay · 4×</button>
     <button id="approve" class="primary">Approve</button>
-    <button id="run-demo">Run demo</button>
-    <button id="run-flaw">Run demo with flaw</button>
   </header>
+  <form class="prompt-bar" onsubmit="return false">
+    <label for="build-prompt">Describe what to build</label>
+    <input id="build-prompt" type="text" value="build a to-do app with a REST API and a simple web page">
+    <button id="run-prompt" class="primary" type="button">Run</button>
+    <button id="run-flaw" type="button">Run demo with flaw</button>
+  </form>
   <div id="release-banner">Select a project to view release status.</div>
   <div id="legend" aria-label="Graph legend">
     <span class="legend-item"><i class="legend-swatch done"></i>Task done</span>
@@ -28,6 +34,7 @@
   </div>
   <main>
     <section aria-label="Project graph">
+      <div id="stage-strip" aria-label="Build pipeline stages"></div>
       <div id="graph"></div>
       <div id="graph-caption">
         <span id="latest-event">Waiting for project events.</span>
@@ -39,12 +46,24 @@
     </section>
     <aside>
       <div class="panel">
-        <h2>Selected node</h2>
-        <dl id="details"><dt>Node</dt><dd>Click a graph node to inspect it.</dd></dl>
+        <div class="panel-heading">
+          <h2>Output</h2>
+          <span id="output-status">No run selected</span>
+        </div>
+        <div id="artifact-list" aria-label="Generated files"></div>
+        <div class="preview-heading">
+          <span id="preview-path">No file selected</span>
+          <span>read only</span>
+        </div>
+        <pre id="artifact-preview">Generated files will appear here as agents record artifacts.</pre>
       </div>
       <div class="panel">
         <h2>Recent events</h2>
         <ol id="events"></ol>
+      </div>
+      <div class="panel selected-panel">
+        <h2>Selected node</h2>
+        <dl id="details"><dt>Node</dt><dd>Click a graph node to inspect it.</dd></dl>
       </div>
     </aside>
   </main>

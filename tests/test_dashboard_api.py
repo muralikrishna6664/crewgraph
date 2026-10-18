@@ -7,6 +7,7 @@ from redis.exceptions import ResponseError
 from app import queries
 import app.main as main
 from app.main import app
+from agents import worker
 
 
 def _delete_test_graph(graph) -> None:
@@ -25,6 +26,7 @@ def test_project_graph_and_events_endpoints_return_persisted_data() -> None:
 
     try:
         queries.create_project(graph, project_id)
+        queries.update_project_prompt(graph, project_id, "Build a tiny demo")
         queries.create_task_dag(
             graph,
             [{"id": "task-1", "title": "Build service", "skill": "backend"}],
@@ -79,6 +81,10 @@ def test_project_graph_and_events_endpoints_return_persisted_data() -> None:
             edge["source"] in visible_node_ids and edge["target"] in visible_node_ids
             for edge in graph_data["edges"]
         )
+        prompt_node = next(node for node in graph_data["nodes"] if node["label"] == "Prompt")
+        output_node = next(node for node in graph_data["nodes"] if node["label"] == "Output")
+        assert prompt_node["properties"]["prompt"] == "Build a tiny demo"
+        assert output_node["properties"]["status"] == "pending"
 
         assert events_response.status_code == 200
         events = events_response.json()
@@ -94,6 +100,74 @@ def test_project_graph_and_events_endpoints_return_persisted_data() -> None:
         assert any(event["detail"] == "Dashboard event node" for event in events)
         timestamps = [event["ts"] for event in events]
         assert timestamps == sorted(timestamps)
+    finally:
+        _delete_test_graph(graph)
+
+
+def test_artifact_listing_and_preview_use_registered_bounded_workspace_files(
+    tmp_path, monkeypatch
+) -> None:
+    project_id = f"test_artifacts_{uuid4().hex}"
+    graph = FalkorDB().select_graph(project_id)
+    workspace_root = tmp_path / "workspace"
+    monkeypatch.setattr(worker, "WORKSPACE_ROOT", workspace_root)
+    client = TestClient(app)
+
+    try:
+        queries.create_project(graph, project_id)
+        queries.create_task_dag(
+            graph,
+            [{"id": "task-1", "title": "Build page", "skill": "frontend"}],
+            [],
+        )
+        queries.link_tasks_to_project(graph, project_id, ["task-1"])
+        artifact = queries.record_artifact(
+            graph,
+            "task-1",
+            "frontend-agent",
+            "dashboard/index.html",
+            "frontend",
+            "<h1>Real artifact</h1>",
+        )
+        file_path = workspace_root / project_id / "dashboard" / "index.html"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_text("<h1>Real artifact</h1>", encoding="utf-8")
+
+        listed = client.get(f"/projects/{project_id}/artifacts")
+        assert listed.status_code == 200
+        assert listed.json() == [
+            {
+                "id": artifact.properties["id"],
+                "path": "dashboard/index.html",
+                "version": 1,
+                "agents": ["frontend-agent"],
+                "ts": artifact.properties["ts"],
+            }
+        ]
+        preview = client.get(
+            f"/projects/{project_id}/artifacts/{artifact.properties['id']}"
+        )
+        assert preview.status_code == 200
+        assert preview.json()["content"] == "<h1>Real artifact</h1>"
+
+        unsafe = queries.record_artifact(
+            graph,
+            "task-1",
+            "frontend-agent",
+            "../outside.html",
+            "frontend",
+            "",
+            artifact_id="unsafe-path",
+        )
+        assert unsafe.properties["id"] == "unsafe-path"
+        assert client.get(
+            f"/projects/{project_id}/artifacts/unsafe-path"
+        ).status_code == 400
+
+        monkeypatch.setattr(main, "_max_artifact_size", 2)
+        assert client.get(
+            f"/projects/{project_id}/artifacts/{artifact.properties['id']}"
+        ).status_code == 413
     finally:
         _delete_test_graph(graph)
 

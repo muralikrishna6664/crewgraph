@@ -56,6 +56,27 @@ def list_projects() -> list[str]:
         client.close()
 
 
+def artifact_by_id(graph: Graph, artifact_id: str) -> Node | None:
+    """Return a project artifact by its persisted ID."""
+    result = graph.ro_query(
+        "MATCH (artifact:Artifact {id: $artifact_id}) RETURN artifact",
+        {"artifact_id": artifact_id},
+    )
+    return result.result_set[0][0] if result.result_set else None
+
+
+def update_project_prompt(graph: Graph, project_id: str, prompt: str) -> None:
+    """Persist the user's build prompt on its project node."""
+    graph.query(
+        """
+        MATCH (project:Project {id: $project_id})
+        SET project.prompt = $prompt
+        RETURN project
+        """,
+        {"project_id": project_id, "prompt": prompt},
+    )
+
+
 def graph_nodes(graph: Graph) -> list[Node]:
     """Return all nodes in a project's graph for graph visualization."""
     result = graph.ro_query("MATCH (node) RETURN node")
@@ -82,6 +103,14 @@ def recent_events(graph: Graph, limit: int = 50) -> list[Node]:
         {"limit": limit},
     )
     return list(reversed([row[0] for row in result.result_set]))
+
+
+def project_events(graph: Graph) -> list[Node]:
+    """Return all persisted project events in chronological order."""
+    result = graph.ro_query(
+        "MATCH (event:Event) RETURN event ORDER BY event.ts"
+    )
+    return [row[0] for row in result.result_set]
 
 
 def record_artifact(

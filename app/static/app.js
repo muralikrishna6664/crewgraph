@@ -1,10 +1,13 @@
     const picker = document.getElementById("project-picker");
     const banner = document.getElementById("release-banner");
     const message = document.getElementById("message");
+    const promptInput = document.getElementById("build-prompt");
     const colors = {
-      Project: "#b98aff", Agent: "#5b9dff", Artifact: "#4de3ef",
-      Vulnerability: "#ff527f", Approval: "#b98aff"
+      Project: "#b98aff", Prompt: "#b98aff", Output: "#b98aff",
+      Agent: "#5b9dff", Artifact: "#4de3ef", Vulnerability: "#ff527f",
+      Approval: "#b98aff"
     };
+    const stageNames = ["Planner", "Backend / Frontend", "Tester", "Debugger", "Security", "Approval", "Release"];
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let lastNodeIds = null;
     let selectedNodeId = null;
@@ -15,6 +18,206 @@
     let consecutiveRefreshFailures = 0;
     let knownEventIds = new Set();
     let eventProjectId = null;
+    let selectedArtifactId = null;
+    let manualPreviewSelection = false;
+    let previewProjectId = null;
+    let replayTimeouts = [];
+    let replayVersion = 0;
+    let replayActive = false;
+
+    function initializeStages() {
+      const strip = document.getElementById("stage-strip");
+      stageNames.forEach((name, index) => {
+        const step = document.createElement("div");
+        step.className = "stage-step";
+        step.dataset.stage = String(index);
+        const label = document.createElement("span");
+        label.className = "stage-label";
+        label.textContent = name;
+        step.append(label);
+        strip.append(step);
+        if (index < stageNames.length - 1) {
+          const link = document.createElement("span");
+          link.className = "stage-link";
+          link.dataset.link = String(index);
+          strip.append(link);
+        }
+      });
+    }
+
+    function updateStages(nodes, events, release) {
+      const tasks = nodes.filter(node => node.label === "Task");
+      const tasksFor = skill => tasks.filter(node => node.properties.skill === skill);
+      const allDone = skill => {
+        const matching = tasksFor(skill);
+        return matching.length > 0 && matching.every(task => task.status === "done");
+      };
+      const testerDone = allDone("tester");
+      const securityDone = allDone("security");
+      const bugEvents = events.filter(event => event.type === "bug found");
+      const bugs = nodes.filter(node => node.label === "Bug");
+      const debuggerDone = bugEvents.length
+        ? bugs.length > 0 && bugs.every(bug => bug.status === "fixed")
+        : testerDone;
+      const approved = nodes.some(
+        node => node.label === "Approval" && node.status === "approved"
+      );
+      const completed = [
+        tasks.length > 0,
+        ["backend", "frontend"].some(skill => tasksFor(skill).length > 0)
+          && ["backend", "frontend"].filter(skill => tasksFor(skill).length > 0).every(allDone),
+        testerDone,
+        debuggerDone,
+        securityDone,
+        approved,
+        Boolean(release.released)
+      ];
+      const activeIndex = completed.findIndex(done => !done);
+      document.querySelectorAll(".stage-step").forEach((step, index) => {
+        step.classList.toggle("complete", completed[index]);
+        step.classList.toggle("active", index === activeIndex);
+      });
+    }
+
+    function stageForEvent(event, tasksById) {
+      if (event.type === "bug found" || event.type === "bug fixed") return 3;
+      const task = tasksById.get(event.task_id);
+      const skill = task && task.properties ? task.properties.skill : "";
+      if (skill === "backend" || skill === "frontend") return 1;
+      if (skill === "tester") return 2;
+      if (skill === "debugger" || String(event.detail || "").startsWith("debugger")) return 3;
+      if (skill === "security") return 4;
+      if (skill === "release") return 6;
+      return null;
+    }
+
+    function animateStageTravel(stageIndex) {
+      if (stageIndex === null || stageIndex <= 0) return;
+      const link = document.querySelector(`.stage-link[data-link="${stageIndex - 1}"]`);
+      if (!link) return;
+      const dot = document.createElement("i");
+      dot.className = "travel-dot";
+      link.append(dot);
+      dot.addEventListener("animationend", () => dot.remove(), { once: true });
+    }
+
+    async function showArtifactPreview(projectId, artifact) {
+      selectedArtifactId = artifact.id;
+      const preview = document.getElementById("artifact-preview");
+      document.getElementById("preview-path").textContent = artifact.path;
+      preview.textContent = "Loading preview…";
+      try {
+        const file = await request(
+          `/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`
+        );
+        preview.textContent = file.content;
+      } catch (error) {
+        preview.textContent = `Preview unavailable: ${error.message}`;
+      }
+    }
+
+    function renderOutput(projectId, artifacts, release, run) {
+      const list = document.getElementById("artifact-list");
+      list.replaceChildren();
+      const status = document.getElementById("output-status");
+      status.textContent = release.released
+        ? "Released"
+        : release.can_release ? "Awaiting approval"
+        : run && run.status === "failed" ? "Run failed"
+          : run && run.status === "finished" ? "Awaiting approval" : "Building";
+      for (const artifact of artifacts) {
+        const button = document.createElement("button");
+        button.className = "artifact-entry";
+        const agents = Array.isArray(artifact.agents) ? artifact.agents.join(", ") : "";
+        button.textContent = `${artifact.path} · v${artifact.version}${agents ? ` · ${agents}` : ""}`;
+        button.addEventListener("click", () => {
+          manualPreviewSelection = true;
+          showArtifactPreview(projectId, artifact);
+        });
+        list.append(button);
+      }
+      const selectedStillExists = artifacts.some(item => item.id === selectedArtifactId);
+      if (!selectedStillExists) selectedArtifactId = null;
+      const completed = release.released || (run && run.status === "finished");
+      if (!manualPreviewSelection && completed) {
+        const preferred = ["main.py", "dashboard/index.html"].map(path =>
+          artifacts.filter(item => item.path === path)
+            .sort((left, right) => right.version - left.version)[0]
+        ).find(Boolean);
+        if (preferred && preferred.id !== selectedArtifactId) {
+          showArtifactPreview(projectId, preferred);
+        } else if (!preferred && !selectedArtifactId && artifacts.length) {
+          showArtifactPreview(projectId, artifacts[artifacts.length - 1]);
+        }
+      }
+      if (!selectedArtifactId) {
+        document.getElementById("preview-path").textContent = "No file selected";
+        document.getElementById("artifact-preview").textContent =
+          "Generated files will appear here as agents record artifacts.";
+      }
+    }
+
+    function stopReplay() {
+      replayVersion += 1;
+      replayTimeouts.forEach(timer => window.clearTimeout(timer));
+      replayTimeouts = [];
+      replayActive = false;
+      document.getElementById("replay-events").disabled = false;
+    }
+
+    function animateReplayEvent(event, tasksById) {
+      document.getElementById("latest-event").textContent =
+        describeEvent(event, tasksById);
+      animateStageTravel(stageForEvent(event, tasksById));
+      if (event.type === "bug found") animateFoundBug(event.bug_id);
+      if (reducedMotion) return;
+      const targetId = event.task_id || event.artifact_id || event.bug_id;
+      if (!targetId) return;
+      const node = cy.$id(targetId);
+      if (!node.length) return;
+      node.animate({ style: { "shadow-blur": 29, "shadow-opacity": 1 } }, {
+        duration: 180,
+        complete: () => node.animate({
+          style: { "shadow-blur": 15, "shadow-opacity": 0.62 }
+        }, { duration: 100 })
+      });
+    }
+
+    function replayEvents(events, tasksById) {
+      stopReplay();
+      const version = replayVersion;
+      const button = document.getElementById("replay-events");
+      button.disabled = true;
+      replayActive = events.length > 0;
+      let elapsed = 0;
+      let previousTimestamp = null;
+      events.forEach((event, index) => {
+        const timestamp = Number(event.ts);
+        if (Number.isFinite(timestamp)) {
+          if (previousTimestamp !== null && timestamp >= previousTimestamp) {
+            elapsed += (timestamp - previousTimestamp) / 4;
+          }
+          previousTimestamp = timestamp;
+        }
+        const timer = window.setTimeout(() => {
+          if (version !== replayVersion) return;
+          animateReplayEvent(event, tasksById);
+          if (index === events.length - 1) {
+            replayActive = false;
+            button.disabled = false;
+          }
+        }, elapsed);
+        replayTimeouts.push(timer);
+      });
+      if (!events.length) button.disabled = true;
+    }
+
+    initializeStages();
+    request("/config").then(config => {
+      document.getElementById("llm-badge").textContent = config.llm_mode;
+    }).catch(error => {
+      document.getElementById("llm-badge").textContent = `Config error: ${error.message}`;
+    });
     const cy = cytoscape({
       container: document.getElementById("graph"),
       elements: [],
@@ -153,6 +356,8 @@
         case "Agent": return properties.name || "Agent";
         case "Bug": return properties.title || "Bug";
         case "Project": return properties.name || "Project";
+        case "Prompt": return properties.prompt || "Prompt";
+        case "Output": return "Output";
         case "Approval": return `Approval (${properties.status || "pending"})`;
         case "Lesson": return properties.title || properties.content || "Lesson";
         case "Review":
@@ -292,6 +497,9 @@
         selectedNodeId = null;
         knownEventIds = new Set();
         eventProjectId = null;
+        previewProjectId = null;
+        selectedArtifactId = null;
+        manualPreviewSelection = false;
         showEmptyDetails();
         banner.textContent = "No projects yet. Click Run demo.";
         banner.className = "";
@@ -299,15 +507,25 @@
         document.getElementById("latest-event").textContent = "Waiting for project events.";
         document.getElementById("progress-label").textContent = "0 / 0 done";
         document.getElementById("progress-fill").style.width = "0%";
+        document.getElementById("artifact-list").replaceChildren();
+        document.getElementById("replay-events").disabled = true;
+        document.getElementById("artifact-preview").textContent =
+          "Generated files will appear here as agents record artifacts.";
         return;
       }
-      const [graph, events, release, run] = await Promise.all([
+      if (previewProjectId !== projectId) {
+        previewProjectId = projectId;
+        selectedArtifactId = null;
+        manualPreviewSelection = false;
+      }
+      const [graph, events, release, run, artifacts] = await Promise.all([
         request(`/projects/${encodeURIComponent(projectId)}/graph`),
         request(`/projects/${encodeURIComponent(projectId)}/events`),
         request(`/projects/${encodeURIComponent(projectId)}/release-status`),
         projectId === activeRunId
           ? request(`/demo/runs/${encodeURIComponent(projectId)}`)
-          : Promise.resolve(null)
+          : Promise.resolve(null),
+        request(`/projects/${encodeURIComponent(projectId)}/artifacts`)
       ]);
       const nodes = graph.nodes.map(node => {
         const label = nodeDisplayLabel(node);
@@ -388,12 +606,18 @@
         if (item.id && !knownEventIds.has(item.id)) {
           knownEventIds.add(item.id);
           if (item.type === "bug found") animateFoundBug(item.bug_id);
+          animateStageTravel(stageForEvent(item, tasksById));
+        }
+        if (!replayActive) {
+          document.getElementById("replay-events").disabled = events.length === 0;
         }
       }
       const latestEvent = events[events.length - 1];
       document.getElementById("latest-event").textContent = latestEvent
         ? describeEvent(latestEvent, tasksById)
         : "Waiting for project events.";
+      updateStages(graph.nodes, events, release);
+      renderOutput(projectId, artifacts, release, run);
 
       banner.className = release.released
         ? "allowed"
@@ -432,7 +656,7 @@
         const started = await request("/demo/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ flaw })
+          body: JSON.stringify({ prompt: promptInput.value, flaw })
         });
         activeRunId = started.project_id;
         activeRunStartedAt = Date.now();
@@ -456,9 +680,27 @@
         reportRefreshFailure(error);
       }
     });
-    document.getElementById("run-demo").addEventListener("click", () => startDemo(false));
+    document.getElementById("run-prompt").addEventListener("click", () => startDemo(false));
     document.getElementById("run-flaw").addEventListener("click", () => startDemo(true));
-    picker.addEventListener("change", () => refreshProject().catch(reportRefreshFailure));
+    picker.addEventListener("change", () => {
+      stopReplay();
+      refreshProject().catch(reportRefreshFailure);
+    });
+    document.getElementById("replay-events").addEventListener("click", async () => {
+      if (!picker.value) return;
+      try {
+        const [events, graph] = await Promise.all([
+          request(`/projects/${encodeURIComponent(picker.value)}/events`),
+          request(`/projects/${encodeURIComponent(picker.value)}/graph`)
+        ]);
+        const tasksById = new Map(
+          graph.nodes.filter(node => node.label === "Task").map(node => [node.id, node])
+        );
+        replayEvents(events, tasksById);
+      } catch (error) {
+        reportRefreshFailure(error);
+      }
+    });
 
     async function poll() {
       try {
