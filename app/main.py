@@ -220,12 +220,17 @@ def demo_run_status(
     project_id: str,
     session: DemoSession | None = Depends(current_session),
 ) -> dict[str, str]:
-    """Return the in-process status and any error for a dashboard demo run."""
+    """Return a run status, falling back to unknown for an existing project."""
     _ensure_project_access(project_id, session)
     with _demo_runs_lock:
         status = _demo_runs.get(project_id)
     if status is None:
-        raise HTTPException(status_code=404, detail="Demo run not found")
+        _project_nodes(project_id)
+        return {
+            "project_id": project_id,
+            "status": "unknown",
+            "message": "No in-process run status is available.",
+        }
     return {"project_id": project_id, **status}
 
 

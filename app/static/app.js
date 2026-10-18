@@ -242,7 +242,7 @@
               return "#b98aff";
             },
             label: "data(title)",
-            color: "#e4eaf4", "text-valign": "bottom", "text-halign": "center",
+            color: "#102033", "text-valign": "bottom", "text-halign": "center",
             "text-wrap": "wrap", "text-max-width": 120, "font-size": 12,
             "font-family": "Cascadia Code, Consolas, monospace",
             "text-margin-y": 7,
@@ -275,11 +275,11 @@
         {
           selector: "edge",
           style: {
-            width: 1.5, "line-color": "#344357", "target-arrow-color": "#526783",
+            width: 1.5, "line-color": "#9eacbd", "target-arrow-color": "#70829a",
             "target-arrow-shape": "triangle", "curve-style": "bezier",
-            label: "", "font-size": 9, color: "#91a2b9",
-            "text-background-color": "#0e131c", "text-background-opacity": 1,
-            opacity: 0.8, "transition-property": "opacity", "transition-duration": "220ms"
+            label: "", "font-size": 9, color: "#526277",
+            "text-background-color": "#fff", "text-background-opacity": 0.9,
+            opacity: 0.88, "transition-property": "opacity", "transition-duration": "220ms"
           }
         },
         {
@@ -288,7 +288,7 @@
         },
         {
           selector: "edge.edge-visible",
-          style: { label: "data(type)", "line-color": "#9b7ad9", "target-arrow-color": "#b98aff" }
+          style: { label: "data(type)", "line-color": "#7450bd", "target-arrow-color": "#7450bd" }
         },
         {
           selector: "node:selected",

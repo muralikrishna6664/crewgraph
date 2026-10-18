@@ -205,6 +205,8 @@ The default is `LLM_PROVIDER=mock`, so the demo runs without a key or model netw
 
 The dashboard shows the active provider as **Mock LLM mode** or **Live LLM**. Its prompt is sent to the planner; mock mode intentionally keeps the canned DAG, while a configured live provider can produce a prompt-specific plan. The graph, recent-event caption, stage transitions, progress bar, node/edge animations, and 4× Replay all use persisted FalkorDB state and `/events` results. Replay does not synthesize events.
 
+The dashboard and login use a white, light-theme background while retaining high-contrast graph status colors.
+
 The graph view adds a violet **Prompt** frame from the prompt stored on the `Project` node and an **Output** frame reflecting actual release status. The output panel lists graph-recorded artifact versions and producing agents. Its read-only preview reads the selected registered file from that project's workspace; paths are confined to the project workspace and previews are limited to 256 KiB.
 
 An OpenAI Chat Completions provider is wired in [agents/llm.py](./agents/llm.py), but live model output is not covered by the tests or a live API run here. To use it, supply your own model and key in the current shell; never put a real key in source control.
@@ -346,7 +348,7 @@ The 20-project mock load run completed 80 tasks in 11.04 seconds (7.25 tasks/sec
 - The app under test is a small in-memory to-do API and is not durable.
 - The security scanner checks a narrow set of patterns; it is not a comprehensive audit.
 - `Skill`, `Episode`, and `Review` are declared labels but are not populated by the current demo flow. Some relationship constants are also model-only and unused; see the graph model notes.
-- Dashboard run status is process-local, and there is no distributed worker service or persistent job registry.
+- Dashboard run status is process-local, and there is no distributed worker service or persistent job registry. After an API restart, an existing project may have no transient run status; the dashboard continues to show its persisted graph and release state.
 - The dashboard loads pinned Cytoscape.js from a CDN and needs access to that CDN in the browser.
 - Future work: persist richer agent episodes and lessons, broaden security checks, validate more model providers, and benchmark unthrottled concurrency against a suitably configured FalkorDB deployment.
 
