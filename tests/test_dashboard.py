@@ -38,11 +38,14 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert "window.CrewGraphLayout.buildSimpleGraph(" in script
     assert "positionCache = new Map()" in script
     assert 'nodeAppearMs: 700' in script
-    assert 'edgeDrawMs: 900' in script
-    assert 'particleTravelMs: 1600' in script
+    assert 'edgeDrawMs: 1000' in script
+    assert 'particleTravelMs: 1000' in script
     assert 'pulsePeriodMs: 2200' in script
     assert 'cameraMs: 800' in script
-    assert 'minStepGapMs: 900' in script
+    assert 'minStepGapMs: 1500' in script
+    assert "function applySimpleTutorialStep(item)" in script
+    assert "Step ${item.stepNumber} of ${item.stepTotal}" in script
+    assert 'selector: "node.tutorial-active"' in script
     assert 'id="speed-control"' in response.text
     assert 'Replay · 2×' in response.text
     assert "Graph layout collision" in layout

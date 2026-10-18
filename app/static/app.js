@@ -1,10 +1,10 @@
     const TIMINGS = {
       nodeAppearMs: 700,
-      edgeDrawMs: 900,
-      particleTravelMs: 1600,
+      edgeDrawMs: 1000,
+      particleTravelMs: 1000,
       pulsePeriodMs: 2200,
       cameraMs: 800,
-      minStepGapMs: 900,
+      minStepGapMs: 1500,
       nodePulseInMs: 480,
       edgeStaggerMs: 24,
       bugShakeStepMs: 100,
@@ -44,6 +44,20 @@
     let visualEventTimer = null;
     let lastVisualStepAt = 0;
     let particleSequence = 0;
+    let visualStepTimer = null;
+    let visualStepInProgress = false;
+    let visualPlaybackProjectId = null;
+    let visualRunFinished = false;
+    let replayVisualMode = false;
+    let visualReachedNodeIds = new Set();
+    let visualNodeStatuses = new Map();
+    let visualCompletedTaskIds = new Set();
+    let visualProgressTotal = 0;
+    let visualProgressDone = 0;
+    let authoritativeProgressDone = 0;
+    let previousVisualNodeId = "simple:plan";
+    let activeTutorialNodeId = null;
+    let lastTutorialCaptionProjectId = null;
 
     function playbackMultiplier(replay = false) {
       return Number(speedControl.value) * (replay ? 2 : 1);
@@ -108,7 +122,7 @@
     }
 
     function animateStageTravel(stageIndex, replay = false) {
-      if (stageIndex === null || stageIndex <= 0) return;
+      if (reducedMotion || stageIndex === null || stageIndex <= 0) return;
       const link = document.querySelector(`.stage-link[data-link="${stageIndex - 1}"]`);
       if (!link) return;
       const dot = document.createElement("i");
@@ -248,7 +262,33 @@
       }
     }
 
-    function findEventEdge(event) {
+    function simpleNodeForEvent(event, tasksById) {
+      if (event.type === "bug found" || event.type === "bug fixed") {
+        return cy.$id("simple:bug").length ? "simple:bug" : null;
+      }
+      const task = tasksById.get(event.task_id);
+      const skill = task && task.properties ? task.properties.skill : "";
+      const ids = {
+        backend: "simple:backend",
+        frontend: "simple:frontend",
+        tester: "simple:test",
+        security: "simple:scan",
+        release: "simple:release"
+      };
+      return ids[skill] || null;
+    }
+
+    function findEventEdge(event, targetNodeId, previousNodeId) {
+      if (graphView === "simple") {
+        if (!targetNodeId || !previousNodeId || targetNodeId === previousNodeId) {
+          return cy.collection();
+        }
+        return cy.edges().filter(edge =>
+          edge.data("type") === "SIMPLE_SPINE"
+          && edge.data("source") === previousNodeId
+          && edge.data("target") === targetNodeId
+        ).first();
+      }
       if (event.type === "task claimed") {
         return cy.edges().filter(edge =>
           edge.data("type") === "AGENT_TASK" && edge.data("target") === event.task_id
@@ -278,12 +318,23 @@
       return cy.collection();
     }
 
-    function animateEventEdge(event, replay = false) {
+    function animateEventEdge(event, targetNodeId, previousNodeId, replay = false) {
       if (reducedMotion) return;
-      const edge = findEventEdge(event);
+      const edge = findEventEdge(event, targetNodeId, previousNodeId);
       if (!edge || !edge.length) return;
       const source = edge.source().position();
       const target = edge.target().position();
+      edge.animate({ style: { opacity: 0.95, width: 2 } }, {
+        duration: TIMINGS.edgeDrawMs / playbackMultiplier(replay),
+        complete: () => edge.animate({
+          style: {
+            opacity: graphView === "simple"
+              ? edge.hasClass("simple-done-edge") ? 1 : 0.28
+              : 0.88,
+            width: graphView === "simple" ? 1 : 1.5
+          }
+        }, { duration: TIMINGS.edgeDrawMs / playbackMultiplier(replay) })
+      });
       const particle = cy.add({
         data: { id: `event-particle-${++particleSequence}` },
         position: source,
@@ -295,9 +346,92 @@
       });
     }
 
+    function pulseTutorialNode(node, replay = false) {
+      if (reducedMotion || !node.length || !node.hasClass("tutorial-active")) return;
+      const halfPeriod = TIMINGS.pulsePeriodMs / playbackMultiplier(replay) / 2;
+      node.animate({ style: { "underlay-padding": 17, "underlay-opacity": 0.85 } }, {
+        duration: halfPeriod,
+        complete: () => {
+          if (!node.hasClass("tutorial-active")) return;
+          node.animate({ style: { "underlay-padding": 9, "underlay-opacity": 0.34 } }, {
+            duration: halfPeriod,
+            complete: () => pulseTutorialNode(node, replay)
+          });
+        }
+      });
+    }
+
+    function applySimpleTutorialStep(item) {
+      if (graphView !== "simple" || visualPlaybackProjectId !== picker.value) return null;
+      const { event, tasksById } = item;
+      const targetId = simpleNodeForEvent(event, tasksById);
+      if (!targetId) return null;
+      const task = tasksById.get(event.task_id);
+      const node = cy.$id(targetId);
+      if (!node.length) return null;
+
+      if (activeTutorialNodeId) cy.$id(activeTutorialNodeId).removeClass("tutorial-active");
+      if (event.type === "task claimed") {
+        visualNodeStatuses.set(targetId, "working");
+        visualReachedNodeIds.add(targetId);
+        const agentName = task && task.properties && task.properties.claimed_by
+          ? task.properties.claimed_by
+          : String(event.detail || "").replace(/^Claimed by /, "");
+        node.data({ simpleStatus: "working", agentName, unreached: false });
+      } else if (event.type === "task done") {
+        visualNodeStatuses.set(targetId, "done");
+        visualReachedNodeIds.add(targetId);
+        if (event.task_id) visualCompletedTaskIds.add(event.task_id);
+        node.data({ simpleStatus: "done", agentName: "", unreached: false });
+        visualProgressDone = Math.min(visualCompletedTaskIds.size, visualProgressTotal);
+      } else if (event.type === "bug found") {
+        visualNodeStatuses.set(targetId, "waiting");
+        visualReachedNodeIds.add(targetId);
+        node.data({
+          simpleStatus: "waiting",
+          displayTitle: "Bug",
+          agentName: "",
+          unreached: false
+        });
+      } else if (event.type === "bug fixed") {
+        visualNodeStatuses.set(targetId, "done");
+        visualReachedNodeIds.add(targetId);
+        node.data({
+          simpleStatus: "done",
+          displayTitle: "Fixed",
+          agentName: "",
+          unreached: false
+        });
+      } else {
+        visualReachedNodeIds.add(targetId);
+        node.data({ unreached: false });
+      }
+
+      node.removeClass("unreached");
+      node.addClass("tutorial-active");
+      activeTutorialNodeId = targetId;
+      const previousId = previousVisualNodeId;
+      previousVisualNodeId = targetId;
+      syncSimpleEdges();
+      syncSimpleLabels();
+      syncWorkingNodes();
+      pulseTutorialNode(node, item.replay);
+      updateProgress(visualProgressDone, visualProgressTotal);
+
+      const sentence = describeEvent(event, tasksById);
+      const stepLabel = item.stepNumber && item.stepTotal
+        ? `Step ${item.stepNumber} of ${item.stepTotal}: `
+        : "";
+      document.getElementById("latest-event").textContent = `${stepLabel}${sentence}`;
+      return { targetId, previousId };
+    }
+
     function applyVisualEvent(item) {
-      document.getElementById("latest-event").textContent =
-        describeEvent(item.event, item.tasksById);
+      const transition = applySimpleTutorialStep(item);
+      if (!transition) {
+        document.getElementById("latest-event").textContent =
+          describeEvent(item.event, item.tasksById);
+      }
       animateStageTravel(stageForEvent(item.event, item.tasksById), item.replay);
       if (item.event.type === "bug found") {
         animateFoundBug(item.event.bug_id, item.replay);
@@ -305,10 +439,17 @@
       if (item.event.type === "bug fixed") {
         animateFixedBug(item.event.bug_id, item.replay);
       }
-      animateEventEdge(item.event, item.replay);
-      const targetId = item.event.task_id || item.event.artifact_id || item.event.bug_id;
+      animateEventEdge(
+        item.event,
+        transition ? transition.targetId : null,
+        transition ? transition.previousId : null,
+        item.replay
+      );
+      const targetId = transition
+        ? transition.targetId
+        : item.event.task_id || item.event.artifact_id || item.event.bug_id;
       const node = targetId && cy.$id(targetId);
-      if (node && node.length && !reducedMotion) {
+      if (!transition && node && node.length && !reducedMotion) {
         node.animate({ style: { "underlay-padding": 16, "underlay-opacity": 0.95 } }, {
           duration: TIMINGS.nodePulseInMs / playbackMultiplier(item.replay),
           complete: () => node.animate({
@@ -319,10 +460,21 @@
     }
 
     function scheduleVisualEvent() {
+      if (visualStepInProgress) return;
       if (visualEventTimer !== null || !visualEventQueue.length) {
-        if (!visualEventQueue.length && replayActive) {
-          replayActive = false;
-          document.getElementById("replay-events").disabled = false;
+        if (!visualEventQueue.length) {
+          if (replayActive) {
+            replayActive = false;
+            document.getElementById("replay-events").disabled = false;
+          }
+          if (
+            visualPlaybackProjectId
+            && visualPlaybackProjectId === picker.value
+            && (replayVisualMode || visualRunFinished)
+            && !visualStepInProgress
+          ) {
+            finishVisualPlayback();
+          }
         }
         return;
       }
@@ -340,20 +492,37 @@
         if (item) {
           applyVisualEvent(item);
           lastVisualStepAt = Date.now();
+          visualStepInProgress = true;
+          if (visualStepTimer !== null) window.clearTimeout(visualStepTimer);
+          visualStepTimer = window.setTimeout(
+            () => {
+              visualStepTimer = null;
+              visualStepInProgress = false;
+              scheduleVisualEvent();
+            },
+            TIMINGS.minStepGapMs / playbackMultiplier(item.replay)
+          );
         }
-        scheduleVisualEvent();
       }, wait);
     }
 
-    function enqueueVisualEvent(event, tasksById, replay = false, gapMs) {
-      visualEventQueue.push({ event, tasksById, replay, gapMs });
+    function enqueueVisualEvent(
+      event, tasksById, replay = false, gapMs, stepNumber, stepTotal
+    ) {
+      visualEventQueue.push({
+        event, tasksById, replay, gapMs, stepNumber, stepTotal
+      });
       scheduleVisualEvent();
     }
 
     function stopReplay() {
       if (visualEventTimer !== null) window.clearTimeout(visualEventTimer);
+      if (visualStepTimer !== null) window.clearTimeout(visualStepTimer);
       visualEventTimer = null;
+      visualStepTimer = null;
+      visualStepInProgress = false;
       visualEventQueue = [];
+      if (replayActive && visualPlaybackProjectId) finishVisualPlayback();
       replayActive = false;
       document.getElementById("replay-events").disabled = false;
     }
@@ -367,14 +536,19 @@
       replayActive = true;
       document.getElementById("replay-events").disabled = true;
       let previousTimestamp = null;
-      for (const event of events) {
+      if (graphView === "simple") beginVisualPlayback(picker.value, true);
+      for (const [index, event] of events.entries()) {
         const timestamp = Number(event.ts);
         let gapMs;
         if (Number.isFinite(timestamp) && previousTimestamp !== null) {
           gapMs = Math.max(0, timestamp - previousTimestamp);
         }
         if (Number.isFinite(timestamp)) previousTimestamp = timestamp;
-        visualEventQueue.push({ event, tasksById, replay: true, gapMs });
+        visualEventQueue.push({
+          event, tasksById, replay: true, gapMs,
+          stepNumber: index + 1,
+          stepTotal: events.length
+        });
       }
       lastVisualStepAt = 0;
       scheduleVisualEvent();
@@ -425,6 +599,7 @@
             width: element => element.data("label") === "Simple" ? 56 : 40,
             height: element => element.data("label") === "Simple" ? 56 : 40,
             "border-width": 1, "border-color": "#c7d4e6",
+            opacity: element => element.data("unreached") ? 0.14 : 1,
             "underlay-color": element => {
               const data = element.data();
               if (data.label === "Bug" || data.simpleGroup === "bug") {
@@ -460,6 +635,14 @@
             "border-color": "#9bc3ff",
             "underlay-padding": element => graphView === "simple" ? 0 : 14,
             "underlay-opacity": element => graphView === "simple" ? 0 : 0.85
+          }
+        },
+        {
+          selector: "node.tutorial-active",
+          style: {
+            "underlay-color": "#5b9dff",
+            "underlay-padding": 12,
+            "underlay-opacity": 0.55
           }
         },
         {
@@ -502,8 +685,14 @@
             "line-color": "#cbd5e1",
             "target-arrow-color": "#cbd5e1",
             "target-arrow-shape": "triangle",
-            opacity: 0.8
+            opacity: 0.28,
+            "transition-property": "opacity, line-color, target-arrow-color",
+            "transition-duration": `${TIMINGS.edgeDrawMs}ms`
           }
+        },
+        {
+          selector: 'edge[type = "SIMPLE_SPINE"].simple-traversed',
+          style: { opacity: 0.95 }
         },
         {
           selector: 'edge[type = "SIMPLE_SPINE"].simple-done-edge',
@@ -568,6 +757,7 @@
         const point = node.renderedPosition();
         label.style.left = `${point.x}px`;
         label.style.top = `${point.y + 31}px`;
+        label.style.opacity = node.data("unreached") ? "0.18" : "1";
         label.dataset.status = node.data("simpleStatus") || "waiting";
       });
       for (const [id, label] of simpleLabelsById) {
@@ -582,6 +772,72 @@
       cy.edges().filter(edge => edge.data("type") === "SIMPLE_SPINE").forEach(edge => {
         edge.toggleClass("simple-done-edge", edge.source().data("simpleStatus") === "done");
       });
+    }
+
+    function updateProgress(done, total) {
+      const completed = Math.min(done, total);
+      document.getElementById("progress-label").textContent =
+        `${completed} / ${total} done`;
+      document.getElementById("progress-fill").style.width =
+        `${total ? completed / total * 100 : 0}%`;
+      document.getElementById("progress-track").setAttribute("aria-valuenow", completed);
+      document.getElementById("progress-track").setAttribute("aria-valuemax", total);
+    }
+
+    function beginVisualPlayback(projectId, replay = false) {
+      visualPlaybackProjectId = projectId;
+      replayVisualMode = replay;
+      visualRunFinished = replay;
+      visualReachedNodeIds = new Set(["simple:prompt", "simple:plan"]);
+      visualNodeStatuses = new Map();
+      visualCompletedTaskIds = new Set();
+      visualProgressDone = 0;
+      previousVisualNodeId = "simple:plan";
+      activeTutorialNodeId = null;
+      lastTutorialCaptionProjectId = projectId;
+      updateProgress(0, visualProgressTotal);
+      cy.nodes().filter(node => node.data("label") === "Simple").forEach(node => {
+        const isInitial = visualReachedNodeIds.has(node.id());
+        const initialStatus = isInitial
+          ? node.data("finalSimpleStatus") || "waiting"
+          : "waiting";
+        node.data({
+          simpleStatus: initialStatus,
+          agentName: "",
+          unreached: !isInitial,
+          displayTitle: node.id() === "simple:bug" ? "Bug" : node.data("finalDisplayTitle")
+        });
+        node.toggleClass("unreached", !isInitial);
+      });
+      syncSimpleEdges();
+      syncSimpleLabels();
+    }
+
+    function finishVisualPlayback() {
+      visualStepInProgress = false;
+      if (visualStepTimer !== null) window.clearTimeout(visualStepTimer);
+      visualStepTimer = null;
+      cy.nodes().filter(node => node.data("label") === "Simple").forEach(node => {
+        node.data({
+          simpleStatus: node.data("finalSimpleStatus") || "waiting",
+          displayTitle: node.data("finalDisplayTitle") || node.data("displayTitle"),
+          agentName: node.data("finalAgentName") || "",
+          unreached: false
+        });
+        node.removeClass("unreached tutorial-active");
+      });
+      if (activeTutorialNodeId) cy.$id(activeTutorialNodeId).removeClass("tutorial-active");
+      activeTutorialNodeId = null;
+      visualPlaybackProjectId = null;
+      visualRunFinished = false;
+      replayVisualMode = false;
+      visualReachedNodeIds.clear();
+      visualNodeStatuses.clear();
+      visualCompletedTaskIds.clear();
+      visualProgressDone = authoritativeProgressDone;
+      updateProgress(authoritativeProgressDone, visualProgressTotal);
+      syncSimpleEdges();
+      syncSimpleLabels();
     }
 
     window.addEventListener("resize", () => {
@@ -740,7 +996,7 @@
     }
 
     function animateFoundBug(bugId, replay = false) {
-      const bug = cy.$id(bugId);
+      const bug = cy.$id(graphView === "simple" ? "simple:bug" : bugId);
       if (!bug.length) return;
       if (reducedMotion) return;
       bug.addClass("shaking");
@@ -755,7 +1011,7 @@
     }
 
     function animateFixedBug(bugId, replay = false) {
-      const bug = cy.$id(bugId);
+      const bug = cy.$id(graphView === "simple" ? "simple:bug" : bugId);
       if (!bug.length || reducedMotion) return;
       bug.addClass("fixed-flash");
       window.setTimeout(
@@ -830,6 +1086,8 @@
         previewRequestVersion += 1;
         selectedNodeId = null;
         stopReplay();
+        visualPlaybackProjectId = null;
+        visualRunFinished = false;
         knownEventIds = new Set();
         eventProjectId = null;
         previewProjectId = null;
@@ -864,7 +1122,8 @@
           : Promise.resolve(null),
         request(`/projects/${encodeURIComponent(projectId)}/artifacts`)
       ]);
-      if (eventProjectId !== projectId) {
+      const projectChanged = eventProjectId !== projectId;
+      if (projectChanged) {
         stopReplay();
         stopTypewriter();
         previewRequestVersion += 1;
@@ -872,6 +1131,12 @@
         eventProjectId = projectId;
         positionCache = new Map();
         cy.elements().remove();
+        visualPlaybackProjectId = activeRunId === projectId ? projectId : null;
+        replayVisualMode = false;
+        visualReachedNodeIds = new Set(["simple:prompt", "simple:plan"]);
+        visualNodeStatuses = new Map();
+        visualCompletedTaskIds = new Set();
+        previousVisualNodeId = "simple:plan";
         knownEventIds = activeRunId === projectId
           ? new Set()
           : new Set(events.map(event => event.id).filter(Boolean));
@@ -894,27 +1159,51 @@
         : window.CrewGraphLayout.buildLaneGraph(
           graph.nodes, graph.edges, positionCache
         );
-      const nodes = laneGraph.nodes.map(node => {
-        const fullTitle = String(node.fullTitle || node.title || nodeDisplayLabel(node));
-        return {
-          ...node,
-          fullTitle,
-          title: graphView === "simple"
-            ? node.displayTitle
-            : fullTitle.length > 16 ? `${fullTitle.slice(0, 15)}…` : fullTitle
-        };
-      });
       const tasksById = new Map(
         graph.nodes.filter(node => node.label === "Task").map(node => [node.id, node])
       );
       const tasks = graph.nodes.filter(node => node.label === "Task");
       const completedTasks = tasks.filter(node => node.status === "done").length;
-      document.getElementById("progress-label").textContent =
-        `${completedTasks} / ${tasks.length} done`;
-      document.getElementById("progress-fill").style.width =
-        `${tasks.length ? completedTasks / tasks.length * 100 : 0}%`;
-      document.getElementById("progress-track").setAttribute("aria-valuenow", completedTasks);
-      document.getElementById("progress-track").setAttribute("aria-valuemax", tasks.length);
+      visualProgressTotal = tasks.length;
+      authoritativeProgressDone = completedTasks;
+      if (visualPlaybackProjectId === projectId && !replayVisualMode) {
+        visualRunFinished = !run || run.status !== "running";
+      }
+      const nodes = laneGraph.nodes.map(node => {
+        const fullTitle = String(node.fullTitle || node.title || nodeDisplayLabel(node));
+        const finalSimpleStatus = node.simpleStatus;
+        const finalDisplayTitle = node.displayTitle;
+        const finalAgentName = node.agentName;
+        const visualPlayback = graphView === "simple"
+          && visualPlaybackProjectId === projectId;
+        const reached = visualReachedNodeIds.has(node.id);
+        const simpleStatus = visualPlayback
+          ? visualNodeStatuses.get(node.id)
+            || (reached ? finalSimpleStatus : "waiting")
+          : finalSimpleStatus;
+        const displayTitle = visualPlayback && node.id === "simple:bug"
+          ? simpleStatus === "done" ? "Fixed" : "Bug"
+          : node.displayTitle;
+        return {
+          ...node,
+          fullTitle,
+          finalSimpleStatus,
+          finalDisplayTitle,
+          finalAgentName,
+          simpleStatus,
+          displayTitle,
+          agentName: visualPlayback && simpleStatus !== "working" ? "" : node.agentName,
+          unreached: visualPlayback && !reached,
+          title: graphView === "simple"
+            ? displayTitle
+            : fullTitle.length > 16 ? `${fullTitle.slice(0, 15)}…` : fullTitle
+        };
+      });
+      if (visualPlaybackProjectId === projectId) {
+        updateProgress(visualProgressDone, tasks.length);
+      } else {
+        updateProgress(completedTasks, tasks.length);
+      }
       const edgeElements = laneGraph.edges;
       const nodeIds = new Set(nodes.map(node => node.id));
       cy.nodes().filter(node => !nodeIds.has(node.id()) && !node.hasClass("particle")).remove();
@@ -923,15 +1212,22 @@
       for (const node of nodes) {
         if (knownNodeIds.has(node.id)) {
           const { position, ...data } = node;
-          cy.$id(node.id).data(data);
+          const element = cy.$id(node.id);
+          element.data(data);
+          if (graphView === "simple") {
+            element.toggleClass("unreached", Boolean(data.unreached));
+          }
         }
       }
       cy.add(addedNodes.map(node => {
         const { position, ...data } = node;
+        const classes = [];
+        if (!reducedMotion) classes.push("entering");
+        if (data.unreached) classes.push("unreached");
         return {
           data,
           position,
-          classes: reducedMotion ? "" : "entering"
+          classes: classes.join(" ")
         };
       }));
       const edgeIds = new Set(edgeElements.map(edge => edge.data.id));
@@ -940,9 +1236,9 @@
       const addedEdges = edgeElements.filter(edge => !knownEdgeIds.has(edge.data.id));
       cy.add(addedEdges.map(edge => ({
         ...edge,
-        classes: reducedMotion ? "" : "drawing"
+        classes: graphView === "simple" || reducedMotion ? "" : "drawing"
       })));
-      revealEdges(addedEdges.map(edge => edge.data.id));
+      if (graphView !== "simple") revealEdges(addedEdges.map(edge => edge.data.id));
       if (addedNodes.length) {
         const preset = cy.layout({ name: "preset", fit: false });
         preset.one("layoutstop", () => {
@@ -954,7 +1250,8 @@
             });
             if (!reducedMotion) {
               cy.nodes(".entering").forEach(node => {
-                node.animate({ style: { opacity: 1, width: 56, height: 56 } }, {
+                const opacity = node.data("unreached") ? 0.14 : 1;
+                node.animate({ style: { opacity, width: 56, height: 56 } }, {
                   duration: TIMINGS.nodeAppearMs / playbackMultiplier(),
                   complete: () => node.removeClass("entering")
                 });
@@ -981,18 +1278,30 @@
       syncWorkingNodes();
       syncSimpleEdges();
       syncSimpleLabels();
+      if (projectChanged && visualPlaybackProjectId === projectId) {
+        beginVisualPlayback(projectId);
+        visualRunFinished = !run || run.status !== "running";
+      }
       showNodeEdges(hoveredNodeId || selectedNodeId);
       for (const item of events) {
         if (item.id && !knownEventIds.has(item.id)) {
           knownEventIds.add(item.id);
-          enqueueVisualEvent(item, tasksById);
+          enqueueVisualEvent(
+            item,
+            tasksById,
+            false,
+            undefined,
+            events.findIndex(event => event.id === item.id) + 1,
+            events.length
+          );
         }
         if (!replayActive) {
           document.getElementById("replay-events").disabled = events.length === 0;
         }
       }
+      scheduleVisualEvent();
       const latestEvent = events[events.length - 1];
-      if (!visualEventQueue.length && !replayActive) {
+      if (!visualEventQueue.length && !replayActive && !visualPlaybackProjectId) {
         document.getElementById("latest-event").textContent = latestEvent
           ? describeEvent(latestEvent, tasksById)
           : "Waiting for project events.";
@@ -1114,6 +1423,10 @@
         const tasksById = new Map(
           graph.nodes.filter(node => node.label === "Task").map(node => [node.id, node])
         );
+        visualProgressTotal = graph.nodes.filter(node => node.label === "Task").length;
+        authoritativeProgressDone = graph.nodes.filter(
+          node => node.label === "Task" && node.status === "done"
+        ).length;
         replayEvents(events, tasksById);
       } catch (error) {
         reportRefreshFailure(error);

@@ -230,6 +230,7 @@ body[data-graph-view="simple"] #lane-labels { display: none; }
   transform: translateX(-50%);
   color: #182433;
   text-align: center;
+  transition: opacity .7s ease;
 }
 
 .simple-node-label strong {
