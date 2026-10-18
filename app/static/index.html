@@ -7,7 +7,7 @@
   <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body data-graph-view="simple">
   <header>
     <h1>CrewGraph</h1>
     <span id="project-name">No project selected</span>
@@ -20,6 +20,10 @@
       <option value="1" selected>1×</option>
       <option value="2">2×</option>
     </select>
+    <div id="view-mode" role="group" aria-label="Graph view">
+      <button id="simple-view" type="button" aria-pressed="true">Simple view</button>
+      <button id="detailed-view" type="button" aria-pressed="false">Detailed view</button>
+    </div>
     <button id="replay-events" type="button" disabled>Replay · 2×</button>
     <button id="approve" class="primary">Approve</button>
     <button id="logout" type="button" hidden>Log out</button>

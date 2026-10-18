@@ -37,6 +37,29 @@ header {
 #speed-control { width: 88px; }
 header button { white-space: nowrap; }
 
+#view-mode {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-raised);
+}
+
+#view-mode button {
+  min-height: 30px;
+  padding: 5px 8px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 10px;
+}
+
+#view-mode button[aria-pressed="true"] {
+  border-color: #c8b5ef;
+  color: #4e347f;
+  background: #f1ebfb;
+}
+
 header h1 {
   margin: 0;
   color: #182433;
@@ -176,6 +199,45 @@ section, aside {
 section { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 #graph-area { position: relative; min-width: 0; min-height: 250px; overflow: hidden; }
 #graph { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 250px; }
+
+body[data-graph-view="simple"] #legend,
+body[data-graph-view="simple"] #stage-strip,
+body[data-graph-view="simple"] #lane-labels { display: none; }
+
+body[data-graph-view="simple"] section { min-height: 560px; }
+
+.simple-node-labels {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.simple-node-labels[hidden] { display: none; }
+
+.simple-node-label {
+  position: absolute;
+  display: grid;
+  justify-items: center;
+  width: 132px;
+  transform: translateX(-50%);
+  color: #182433;
+  text-align: center;
+}
+
+.simple-node-label strong {
+  font: 700 15px/1.2 "Cascadia Code", Consolas, monospace;
+}
+
+.simple-node-label small {
+  margin-top: 3px;
+  color: #526277;
+  font: 400 11px/1.2 "Cascadia Code", Consolas, monospace;
+}
+
+.simple-node-label[data-status="working"] small { color: #2867ad; }
+.simple-node-label[data-status="done"] small { color: #176b43; }
 
 #lane-labels {
   position: absolute;

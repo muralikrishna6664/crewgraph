@@ -28,8 +28,12 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert 'new Date(timestamp).toLocaleTimeString()' in script
     assert 'content.title = String(value);' in script
     assert "Run demo with flaw" in response.text
+    assert 'data-graph-view="simple"' in response.text
+    assert 'id="simple-view" type="button" aria-pressed="true">Simple view</button>' in response.text
+    assert 'id="detailed-view" type="button" aria-pressed="false">Detailed view</button>' in response.text
     assert 'name: "preset"' in script
     assert "window.CrewGraphLayout.buildLaneGraph(" in script
+    assert "window.CrewGraphLayout.buildSimpleGraph(" in script
     assert "positionCache = new Map()" in script
     assert 'nodeAppearMs: 700' in script
     assert 'edgeDrawMs: 900' in script
@@ -44,9 +48,9 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert "artifact-more:" in layout
     assert 'window.addEventListener("resize"' in script
     assert '? request(`/demo/runs/${encodeURIComponent(projectId)}`)' in script
-    assert 'width: 40, height: 40' in script
+    assert 'width: element => element.data("label") === "Simple" ? 56 : 40' in script
     assert '"text-wrap": "wrap", "text-max-width": 120, "font-size": 12' in script
-    assert 'label: "data(title)"' in script
+    assert 'label: element => graphView === "simple" ? "" : element.data("title")' in script
     assert 'case "Task": return properties.title || "Task";' in script
     assert "grid-template-columns: minmax(0, 1fr)" in styles
     assert "section, aside {" in styles

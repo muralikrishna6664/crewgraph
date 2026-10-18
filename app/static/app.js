@@ -10,6 +10,7 @@
       bugShakeStepMs: 100,
       fixedBugFlashMs: 700
     };
+    const simpleVerticalOffset = 40;
     const picker = document.getElementById("project-picker");
     const banner = document.getElementById("release-banner");
     const message = document.getElementById("message");
@@ -23,6 +24,7 @@
     const stageNames = ["Planner", "Backend / Frontend", "Tester", "Debugger", "Security", "Approval", "Release"];
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let positionCache = new Map();
+    let graphView = "simple";
     let selectedNodeId = null;
     let hoveredNodeId = null;
     let activeRunId = null;
@@ -331,10 +333,18 @@
           style: {
             "background-color": element => {
               const data = element.data();
-              if (data.label === "Bug") {
-                return data.status === "fixed" ? "#55e69a" : "#ff527f";
+              if (data.label === "Bug" || data.simpleGroup === "bug") {
+                return data.simpleStatus === "done" || data.status === "fixed"
+                  ? "#55e69a" : "#ff527f";
               }
               if (colors[data.label]) return colors[data.label];
+              if (data.label === "Simple") {
+                return {
+                  done: "#55e69a",
+                  working: "#5b9dff",
+                  waiting: data.simpleGroup === "frame" ? "#b98aff" : "#f5bd4f"
+                }[data.simpleStatus] || "#f5bd4f";
+              }
               if (data.label === "Task") {
                 return {
                   done: "#55e69a", ready: "#f5bd4f", claimed: "#5b9dff",
@@ -343,21 +353,34 @@
               }
               return "#b98aff";
             },
-            label: "data(title)",
+            label: element => graphView === "simple" ? "" : element.data("title"),
             color: "#102033", "text-valign": "bottom", "text-halign": "center",
             "text-wrap": "wrap", "text-max-width": 120, "font-size": 12,
             "font-family": "Cascadia Code, Consolas, monospace",
             "text-margin-y": 7,
-            width: 40, height: 40, "border-width": 1, "border-color": "#c7d4e6",
+            width: element => element.data("label") === "Simple" ? 56 : 40,
+            height: element => element.data("label") === "Simple" ? 56 : 40,
+            "border-width": 1, "border-color": "#c7d4e6",
             "underlay-color": element => {
               const data = element.data();
-              if (data.label === "Bug") return data.status === "fixed" ? "#55e69a" : "#ff527f";
+              if (data.label === "Bug" || data.simpleGroup === "bug") {
+                return data.simpleStatus === "done" || data.status === "fixed"
+                  ? "#55e69a" : "#ff527f";
+              }
+              if (data.label === "Simple") {
+                return {
+                  done: "#55e69a",
+                  working: "#5b9dff",
+                  waiting: data.simpleGroup === "frame" ? "#b98aff" : "#f5bd4f"
+                }[data.simpleStatus] || "#f5bd4f";
+              }
               if (data.label === "Task") {
                 return {done: "#55e69a", ready: "#f5bd4f", claimed: "#5b9dff"}[data.status] || "#758398";
               }
               return colors[data.label] || "#b98aff";
             },
-            "underlay-padding": 9, "underlay-opacity": 0.34,
+            "underlay-padding": element => element.data("label") === "Simple" ? 0 : 9,
+            "underlay-opacity": element => element.data("label") === "Simple" ? 0 : 0.34,
             "transition-property": "opacity, width, height, underlay-padding",
             "transition-duration": `${TIMINGS.nodeAppearMs}ms`
           }
@@ -368,7 +391,12 @@
         },
         {
           selector: "node.working",
-          style: { "border-width": 3, "border-color": "#9bc3ff", "underlay-padding": 14, "underlay-opacity": 0.85 }
+          style: {
+            "border-width": 3,
+            "border-color": "#9bc3ff",
+            "underlay-padding": element => graphView === "simple" ? 0 : 14,
+            "underlay-opacity": element => graphView === "simple" ? 0 : 0.85
+          }
         },
         {
           selector: "node.shaking",
@@ -403,12 +431,35 @@
           style: { "curve-style": "straight" }
         },
         {
+          selector: 'edge[type = "SIMPLE_SPINE"]',
+          style: {
+            "curve-style": "straight",
+            width: 1,
+            "line-color": "#cbd5e1",
+            "target-arrow-color": "#cbd5e1",
+            "target-arrow-shape": "triangle",
+            opacity: 0.8
+          }
+        },
+        {
+          selector: 'edge[type = "SIMPLE_SPINE"].simple-done-edge',
+          style: {
+            "line-color": "#55b987",
+            "target-arrow-color": "#55b987",
+            opacity: 1
+          }
+        },
+        {
           selector: "edge.drawing",
           style: { opacity: 0 }
         },
         {
           selector: "edge.edge-visible",
-          style: { label: "data(type)", "line-color": "#7450bd", "target-arrow-color": "#7450bd" }
+          style: {
+            label: element => graphView === "simple" ? "" : element.data("type"),
+            "line-color": "#7450bd",
+            "target-arrow-color": "#7450bd"
+          }
         },
         {
           selector: "node:selected",
@@ -416,15 +467,72 @@
         },
         {
           selector: "edge.edge-visible",
-          style: { label: "data(type)" }
+          style: {
+            label: element => graphView === "simple" ? "" : element.data("type")
+          }
         }
       ]
     });
 
+    const simpleLabelLayer = document.createElement("div");
+    simpleLabelLayer.id = "simple-node-labels";
+    simpleLabelLayer.className = "simple-node-labels";
+    document.getElementById("graph-area").append(simpleLabelLayer);
+    const simpleLabelsById = new Map();
+
+    function syncSimpleLabels() {
+      simpleLabelLayer.hidden = graphView !== "simple";
+      if (graphView !== "simple") return;
+      const visibleIds = new Set();
+      cy.nodes().filter(node => node.data("label") === "Simple").forEach(node => {
+        visibleIds.add(node.id());
+        let label = simpleLabelsById.get(node.id());
+        if (!label) {
+          label = document.createElement("div");
+          label.className = "simple-node-label";
+          label.append(document.createElement("strong"), document.createElement("small"));
+          simpleLabelLayer.append(label);
+          simpleLabelsById.set(node.id(), label);
+        }
+        label.title = node.data("fullTitle") || node.data("displayTitle");
+        label.children[0].textContent = node.data("displayTitle") || node.data("title");
+        const agentName = node.data("agentName");
+        label.children[1].textContent = [
+          node.data("simpleStatus") || "waiting",
+          node.data("simpleStatus") === "working" && agentName ? agentName : ""
+        ].filter(Boolean).join(" · ");
+        const point = node.renderedPosition();
+        label.style.left = `${point.x}px`;
+        label.style.top = `${point.y + 31}px`;
+        label.dataset.status = node.data("simpleStatus") || "waiting";
+      });
+      for (const [id, label] of simpleLabelsById) {
+        if (!visibleIds.has(id)) {
+          label.remove();
+          simpleLabelsById.delete(id);
+        }
+      }
+    }
+
+    function syncSimpleEdges() {
+      cy.edges().filter(edge => edge.data("type") === "SIMPLE_SPINE").forEach(edge => {
+        edge.toggleClass("simple-done-edge", edge.source().data("simpleStatus") === "done");
+      });
+    }
+
     window.addEventListener("resize", () => {
       cy.resize();
-      if (cy.elements().length) cy.fit(cy.elements(), 40);
+      if (graphView === "simple") {
+        cy.pan({
+          x: document.getElementById("graph").clientWidth / 2,
+          y: document.getElementById("graph").clientHeight / 2 - simpleVerticalOffset
+        });
+      } else if (cy.elements().length) {
+        cy.fit(cy.elements(), 40);
+      }
+      syncSimpleLabels();
     });
+    cy.on("render pan zoom resize", syncSimpleLabels);
 
     cy.on("tap", "node", event => {
       const node = event.target;
@@ -510,6 +618,19 @@
     function pulseWorkingNode(node) {
       if (reducedMotion || !node.hasClass("working")) return;
       const halfPeriod = TIMINGS.pulsePeriodMs / (2 * playbackMultiplier(replayActive));
+      if (graphView === "simple") {
+        node.animate({ style: { "border-width": 5 } }, {
+          duration: halfPeriod,
+          complete: () => {
+            if (!node.hasClass("working")) return;
+            node.animate({ style: { "border-width": 2 } }, {
+              duration: halfPeriod,
+              complete: () => pulseWorkingNode(node)
+            });
+          }
+        });
+        return;
+      }
       node.animate({ style: { "underlay-padding": 16 } }, {
         duration: halfPeriod,
         complete: () => {
@@ -524,7 +645,9 @@
 
     function syncWorkingNodes() {
       cy.nodes().forEach(node => {
-        const isWorking = node.data("label") === "Task" && node.data("status") === "claimed";
+        const isWorking = graphView === "simple"
+          ? node.data("simpleStatus") === "working"
+          : node.data("label") === "Task" && node.data("status") === "claimed";
         if (isWorking && !node.hasClass("working")) {
           node.addClass("working");
           pulseWorkingNode(node);
@@ -692,15 +815,23 @@
         projectNode && projectNode.properties && projectNode.properties.name
           ? projectNode.properties.name
           : projectId;
-      const laneGraph = window.CrewGraphLayout.buildLaneGraph(
-        graph.nodes, graph.edges, positionCache
-      );
+      const laneGraph = graphView === "simple"
+        ? window.CrewGraphLayout.buildSimpleGraph(
+          graph.nodes,
+          positionCache,
+          document.getElementById("graph").clientWidth
+        )
+        : window.CrewGraphLayout.buildLaneGraph(
+          graph.nodes, graph.edges, positionCache
+        );
       const nodes = laneGraph.nodes.map(node => {
-        const fullTitle = String(node.title || nodeDisplayLabel(node));
+        const fullTitle = String(node.fullTitle || node.title || nodeDisplayLabel(node));
         return {
           ...node,
           fullTitle,
-          title: fullTitle.length > 16 ? `${fullTitle.slice(0, 15)}…` : fullTitle
+          title: graphView === "simple"
+            ? node.displayTitle
+            : fullTitle.length > 16 ? `${fullTitle.slice(0, 15)}…` : fullTitle
         };
       });
       const tasksById = new Map(
@@ -745,11 +876,26 @@
       if (addedNodes.length) {
         const preset = cy.layout({ name: "preset", fit: false });
         preset.one("layoutstop", () => {
-          if (reducedMotion) {
+          if (graphView === "simple") {
+            cy.zoom(1);
+            cy.pan({
+              x: document.getElementById("graph").clientWidth / 2,
+              y: document.getElementById("graph").clientHeight / 2 - simpleVerticalOffset
+            });
+            if (!reducedMotion) {
+              cy.nodes(".entering").forEach(node => {
+                node.animate({ style: { opacity: 1, width: 56, height: 56 } }, {
+                  duration: TIMINGS.nodeAppearMs / playbackMultiplier(),
+                  complete: () => node.removeClass("entering")
+                });
+              });
+            }
+          } else if (reducedMotion) {
             cy.fit(cy.elements(), 40);
           } else {
             cy.nodes(".entering").forEach(node => {
-              node.animate({ style: { opacity: 1, width: 40, height: 40 } }, {
+              const size = node.data("label") === "Simple" ? 56 : 40;
+              node.animate({ style: { opacity: 1, width: size, height: size } }, {
                 duration: TIMINGS.nodeAppearMs / playbackMultiplier(),
                 complete: () => node.removeClass("entering")
               });
@@ -763,6 +909,8 @@
         preset.run();
       }
       syncWorkingNodes();
+      syncSimpleEdges();
+      syncSimpleLabels();
       showNodeEdges(hoveredNodeId || selectedNodeId);
       for (const item of events) {
         if (item.id && !knownEventIds.has(item.id)) {
@@ -851,6 +999,26 @@
         reportRefreshFailure(error);
       }
     });
+    function setGraphView(view) {
+      graphView = view;
+      document.body.dataset.graphView = view;
+      document.getElementById("simple-view").setAttribute(
+        "aria-pressed", String(view === "simple")
+      );
+      document.getElementById("detailed-view").setAttribute(
+        "aria-pressed", String(view === "detailed")
+      );
+      positionCache = new Map();
+      selectedNodeId = null;
+      cy.elements().remove();
+      refreshProject().catch(reportRefreshFailure);
+    }
+    document.getElementById("simple-view").addEventListener(
+      "click", () => setGraphView("simple")
+    );
+    document.getElementById("detailed-view").addEventListener(
+      "click", () => setGraphView("detailed")
+    );
     document.getElementById("run-prompt").addEventListener("click", () => startDemo(false));
     document.getElementById("run-flaw").addEventListener("click", () => startDemo(true));
     picker.addEventListener("change", () => {

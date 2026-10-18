@@ -1,61 +1,81 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { buildLaneGraph } = require("../app/static/graph-layout.js");
+const {
+  buildLaneGraph,
+  buildSimpleGraph
+} = require("../app/static/graph-layout.js");
 
-test("lane layout uses unique positions, equal columns, and task-aligned agents", () => {
+test("simple view has unique symmetric positions and equally spaced columns", () => {
   const nodes = [
     { id: "project", label: "Project", properties: { name: "sample" } },
     { id: "prompt", label: "Prompt", properties: {} },
-    { id: "api", label: "Task", properties: { title: "API", claimed_by: "backend" } },
-    { id: "web", label: "Task", properties: { title: "Web", claimed_by: "frontend" } },
-    { id: "test", label: "Task", properties: { title: "Tests", claimed_by: "tester" } },
-    { id: "release", label: "Task", properties: { title: "Release" } },
-    { id: "backend", label: "Agent", properties: { name: "backend" } },
-    { id: "frontend", label: "Agent", properties: { name: "frontend" } },
-    { id: "tester", label: "Agent", properties: { name: "tester" } },
-    { id: "api-v1", label: "Artifact", properties: { path: "api.py", version: 1 } },
-    { id: "api-v2", label: "Artifact", properties: { path: "api.py", version: 2 } },
-    { id: "api-v3", label: "Artifact", properties: { path: "api.py", version: 3 } },
-    { id: "api-v4", label: "Artifact", properties: { path: "api.py", version: 4 } },
-    { id: "bug", label: "Bug", properties: { title: "Open bug", status: "open" } },
+    { id: "api", label: "Task", properties: { title: "Build API", skill: "backend", status: "claimed", claimed_by: "backend" } },
+    { id: "web", label: "Task", properties: { title: "Build page", skill: "frontend", status: "ready" } },
+    { id: "test", label: "Task", properties: { title: "Test app", skill: "tester", status: "pending" } },
+    { id: "scan", label: "Task", properties: { title: "Security scan", skill: "security", status: "pending" } },
+    { id: "release", label: "Task", properties: { title: "Release project", skill: "release", status: "pending" } },
+    { id: "api-agent", label: "Agent", properties: { name: "backend" } },
+    { id: "api-file", label: "Artifact", properties: { path: "main.py" } },
+    { id: "bug", label: "Bug", properties: { title: "Open issue", status: "open" } },
     { id: "approval", label: "Approval", properties: { status: "pending" } },
+    { id: "output", label: "Output", properties: { status: "pending" } }
+  ];
+  const graph = buildSimpleGraph(nodes, new Map(), 812);
+  const points = graph.nodes.map(node => `${node.position.x},${node.position.y}`);
+  assert.equal(new Set(points).size, points.length);
+  assert.equal(graph.nodes.some(node => ["Agent", "Artifact", "Event"].includes(node.label)), false);
+  assert.equal(graph.nodes.some(node => node.id === "project"), false);
+  assert.equal(graph.nodes.some(node => node.id === "simple:plan" && node.title === "Plan"), true);
+  assert.equal(graph.nodes.find(node => node.id === "simple:backend").agentName, "backend");
+
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  assert.equal(byId.get("simple:backend").position.x, byId.get("simple:frontend").position.x);
+  assert.equal(byId.get("simple:backend").position.y, -byId.get("simple:frontend").position.y);
+  const spine = [
+    "simple:prompt", "simple:plan", "simple:backend", "simple:test",
+    "simple:scan", "simple:approve", "simple:release", "simple:output"
+  ].map(id => byId.get(id).position.x);
+  const gaps = spine.slice(1).map((x, index) => x - spine[index]);
+  assert.ok(gaps.every(gap => Math.abs(gap - gaps[0]) < 1e-9));
+  assert.equal(byId.get("simple:bug").position.y - byId.get("simple:test").position.y, 110);
+  assert.equal(byId.get("simple:bug").title, "Bug");
+  assert.ok(graph.edges.every(edge => edge.data.type === "SIMPLE_SPINE"));
+
+  nodes.find(node => node.label === "Bug").properties.status = "fixed";
+  const fixed = buildSimpleGraph(nodes, new Map(), 812);
+  assert.equal(fixed.nodes.find(node => node.id === "simple:bug").title, "Fixed");
+  assert.equal(fixed.nodes.find(node => node.id === "simple:bug").simpleStatus, "done");
+});
+
+test("detailed view retains its task, agent, artifact, and bug lanes", () => {
+  const nodes = [
+    { id: "project", label: "Project", properties: { id: "project" } },
+    { id: "prompt", label: "Prompt", properties: {} },
+    { id: "api", label: "Task", properties: { title: "API", claimed_by: "backend" } },
+    { id: "tests", label: "Task", properties: { title: "Tests" } },
+    { id: "backend", label: "Agent", properties: { name: "backend" } },
+    { id: "file", label: "Artifact", properties: { path: "main.py" } },
+    { id: "bug", label: "Bug", properties: { title: "Open bug", status: "open" } },
     { id: "output", label: "Output", properties: {} }
   ];
   const edges = [
-    { source: "project", target: "api", type: "PART_OF" },
-    { source: "project", target: "web", type: "PART_OF" },
-    { source: "project", target: "test", type: "PART_OF" },
-    { source: "project", target: "release", type: "PART_OF" },
-    { source: "test", target: "api", type: "DEPENDS_ON" },
-    { source: "test", target: "web", type: "DEPENDS_ON" },
-    { source: "release", target: "test", type: "DEPENDS_ON" },
-    { source: "api-v1", target: "api", type: "FOR_TASK" },
-    { source: "api-v2", target: "api", type: "FOR_TASK" },
-    { source: "api-v3", target: "api", type: "FOR_TASK" },
-    { source: "api-v4", target: "api", type: "FOR_TASK" },
-    { source: "api-v1", target: "backend", type: "PRODUCED_BY" },
-    { source: "api-v2", target: "debugger", type: "PRODUCED_BY" },
-    { source: "api-v3", target: "backend", type: "PRODUCED_BY" },
-    { source: "api-v4", target: "debugger", type: "PRODUCED_BY" },
-    { source: "bug", target: "api-v1", type: "FOUND_IN" }
+    { source: "api", target: "project", type: "PART_OF" },
+    { source: "tests", target: "project", type: "PART_OF" },
+    { source: "tests", target: "api", type: "DEPENDS_ON" },
+    { source: "file", target: "api", type: "FOR_TASK" },
+    { source: "file", target: "backend", type: "PRODUCED_BY" },
+    { source: "bug", target: "file", type: "FOUND_IN" }
   ];
-  nodes.push({ id: "debugger", label: "Agent", properties: { name: "debugger" } });
-
   const graph = buildLaneGraph(nodes, edges, new Map());
-  const points = graph.nodes.map(node => `${node.position.x},${node.position.y}`);
-  assert.equal(new Set(points).size, points.length);
-  assert.equal(graph.nodes.some(node => node.id === "project"), false);
-  assert.equal(graph.edges.some(edge => edge.data.type === "PART_OF"), false);
-
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
-  assert.equal(byId.get("api").position.x, byId.get("web").position.x);
-  assert.equal(byId.get("test").position.x - byId.get("api").position.x, 190);
-  assert.equal(byId.get("release").position.x - byId.get("test").position.x, 190);
+
+  assert.equal(byId.has("project"), false);
+  assert.equal(graph.edges.some(edge => edge.data.type === "PART_OF"), false);
   assert.equal(byId.get("agent-lane:api").position.x, byId.get("api").position.x);
-  assert.deepEqual(byId.get("agent-lane:api").properties.agents, ["backend", "debugger"]);
-  assert.equal(byId.get("artifact-more:api").title, "+1 more");
-  assert.equal(graph.nodes.filter(node => node.label === "Agent").length, 3);
+  assert.equal(byId.get("agent-lane:api").position.y, byId.get("api").position.y - 170);
+  assert.equal(byId.get("file").position.y, byId.get("api").position.y + 170);
+  assert.equal(byId.get("bug").position.y, byId.get("file").position.y);
 });
 
 test("cached positions remain fixed when new graph nodes arrive", () => {

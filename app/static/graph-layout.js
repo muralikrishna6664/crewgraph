@@ -35,6 +35,172 @@
     };
   }
 
+  function simpleStatus(node) {
+    const value = properties(node).status || node.status;
+    return value === "done" || value === "fixed" || value === "approved" || value === "released"
+      ? "done"
+      : value === "claimed" || value === "in_progress" ? "working" : "waiting";
+  }
+
+  function buildSimpleGraph(rawNodes, positionCache, width = 1400) {
+    const project = rawNodes.find(node => node.label === "Project");
+    if (!project) return { nodes: [], edges: [], positions: positionCache };
+
+    const projectProperties = properties(project);
+    const tasks = rawNodes.filter(node => node.label === "Task");
+    const tasksBySkill = new Map();
+    for (const task of tasks) {
+      const skill = properties(task).skill;
+      if (!tasksBySkill.has(skill)) tasksBySkill.set(skill, []);
+      tasksBySkill.get(skill).push(task);
+    }
+
+    const rawPrompt = rawNodes.find(node => node.label === "Prompt");
+    const rawApproval = rawNodes.find(node => node.label === "Approval");
+    const rawOutput = rawNodes.find(node => node.label === "Output");
+    const rawBugs = rawNodes.filter(node => node.label === "Bug");
+    const promptText = properties(rawPrompt || {}).prompt || projectProperties.prompt || "";
+    const released = String(properties(rawOutput || {}).status || "").toLowerCase() === "released";
+    const definitions = [
+      {
+        id: "simple:prompt",
+        title: "Prompt",
+        fullTitle: promptText || "Build prompt",
+        group: "frame",
+        status: promptText ? "done" : "waiting",
+        column: 0
+      },
+      {
+        id: "simple:plan",
+        title: "Plan",
+        fullTitle: projectProperties.name || "Project plan",
+        group: "stage",
+        status: tasks.length ? "done" : "waiting",
+        column: 1
+      }
+    ];
+
+    const skills = [
+      ["backend", "backend", "Backend", 2],
+      ["frontend", "frontend", "Frontend", 2],
+      ["tester", "test", "Test", 3],
+      ["security", "scan", "Scan", 4],
+      ["release", "release", "Release", 6]
+    ];
+    for (const [skill, idKey, title, column] of skills) {
+      const matching = tasksBySkill.get(skill) || [];
+      const workingTask = matching.find(task => simpleStatus(task) === "working");
+      const done = matching.length > 0 && matching.every(task => simpleStatus(task) === "done");
+      const status = workingTask ? "working" : done ? "done" : "waiting";
+      const agentName = workingTask
+        ? String(properties(workingTask).claimed_by || "")
+        : "";
+      definitions.push({
+        id: `simple:${idKey}`,
+        title,
+        fullTitle: matching.map(task =>
+          String(properties(task).title || task.title || title)
+        ).join("\n") || title,
+        group: "stage",
+        status: skill === "release" && released ? "done" : status,
+        agentName,
+        properties: matching.map(properties),
+        column
+      });
+    }
+
+    const approvalStatus = simpleStatus(rawApproval || {});
+    definitions.push({
+      id: "simple:approve",
+      title: "Approve",
+      fullTitle: "Human approval",
+      group: "frame",
+      status: approvalStatus,
+      column: 5
+    });
+    definitions.push({
+      id: "simple:output",
+      title: "Output",
+      fullTitle: "Generated project output",
+      group: "frame",
+      status: released ? "done" : "waiting",
+      column: 7
+    });
+
+    if (rawBugs.length) {
+      const allFixed = rawBugs.every(bug => simpleStatus(bug) === "done");
+      definitions.push({
+        id: "simple:bug",
+        title: allFixed ? "Fixed" : "Bug",
+        fullTitle: rawBugs.map(bug =>
+          String(properties(bug).title || bug.title || "Bug")
+        ).join("\n"),
+        group: "bug",
+        status: allFixed ? "done" : "waiting",
+        column: 3,
+        y: 110,
+        properties: rawBugs.map(properties)
+      });
+    }
+
+    const desired = new Map();
+    const spacing = Math.max(90, (width - 160) / 7);
+    for (const item of definitions) {
+      const y = item.y !== undefined
+        ? item.y
+        : item.id === "simple:backend" ? -70
+          : item.id === "simple:frontend" ? 70 : 0;
+      desired.set(item.id, {
+        x: (item.column - 3.5) * spacing,
+        y
+      });
+    }
+
+    const positions = positionCache || new Map();
+    const occupied = new Map(
+      [...positions].map(([id, point]) => [`${point.x},${point.y}`, id])
+    );
+    for (const [id, point] of desired) {
+      if (positions.has(id)) continue;
+      let candidate = { ...point };
+      let key = `${candidate.x},${candidate.y}`;
+      while (occupied.has(key)) {
+        console.warn(`Simple graph layout collision for ${id}; nudging from ${key}`);
+        candidate = { x: candidate.x, y: candidate.y + 56 };
+        key = `${candidate.x},${candidate.y}`;
+      }
+      positions.set(id, candidate);
+      occupied.set(key, id);
+    }
+
+    const nodes = definitions.map(item => ({
+      id: item.id,
+      label: "Simple",
+      title: item.title,
+      displayTitle: item.title,
+      fullTitle: item.fullTitle,
+      simpleGroup: item.group,
+      simpleStatus: item.status,
+      agentName: item.agentName || "",
+      properties: item.properties || {},
+      position: positions.get(item.id)
+    }));
+    const edges = [];
+    const connect = (source, target) => edges.push(makeEdge(source, target, "SIMPLE_SPINE"));
+    connect("simple:prompt", "simple:plan");
+    connect("simple:plan", "simple:backend");
+    connect("simple:plan", "simple:frontend");
+    connect("simple:backend", "simple:test");
+    connect("simple:frontend", "simple:test");
+    connect("simple:test", "simple:scan");
+    connect("simple:scan", "simple:approve");
+    connect("simple:approve", "simple:release");
+    connect("simple:release", "simple:output");
+    if (rawBugs.length) connect("simple:test", "simple:bug");
+
+    return { nodes, edges, positions };
+  }
+
   function buildLaneGraph(rawNodes, rawEdges, positionCache) {
     const project = rawNodes.find(node => node.label === "Project");
     const projectId = project ? properties(project).id : "project";
@@ -295,7 +461,7 @@
     };
   }
 
-  const api = { buildLaneGraph };
+  const api = { buildLaneGraph, buildSimpleGraph };
   if (root) root.CrewGraphLayout = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window === "undefined" ? null : window);
