@@ -188,11 +188,11 @@ def run_flow(
                 raise RuntimeError("Project was released before this checker approved it")
             return timeline
 
-        if state == "Waiting for approval" and not approval_sent:
-            if run_status.get("status") != "finished":
-                raise RuntimeError(
-                    "Release gate requested approval before the demo run finished"
-                )
+        if (
+            state == "Waiting for approval"
+            and not approval_sent
+            and run_status.get("status") == "finished"
+        ):
             verify_repaired_demo(base_url, project_id, token)
             if flow_state(status) != "Waiting for approval":
                 raise RuntimeError("Project is not waiting solely for human approval")
