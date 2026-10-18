@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 from urllib.error import HTTPError, URLError
@@ -9,13 +10,21 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
-def request_json(base_url: str, path: str, body: dict[str, object] | None = None) -> object:
+def request_json(
+    base_url: str,
+    path: str,
+    body: dict[str, object] | None = None,
+    token: str | None = None,
+) -> object:
     """Call a localhost JSON endpoint and return its decoded response."""
     data = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     request = Request(
         f"{base_url}{path}",
         data=data,
-        headers={"Content-Type": "application/json"} if data is not None else {},
+        headers=headers,
         method="POST" if data is not None else "GET",
     )
     try:
@@ -44,10 +53,12 @@ def flow_state(status: dict[str, object]) -> str:
     return "Running tasks"
 
 
-def verify_repaired_demo(base_url: str, project_id: str) -> None:
+def verify_repaired_demo(
+    base_url: str, project_id: str, token: str | None = None
+) -> None:
     """Require the flaw demo to finish tests, security, and bug repair."""
-    graph = request_json(base_url, f"/projects/{project_id}/graph")
-    events = request_json(base_url, f"/projects/{project_id}/events")
+    graph = request_json(base_url, f"/projects/{project_id}/graph", token=token)
+    events = request_json(base_url, f"/projects/{project_id}/events", token=token)
     if not isinstance(graph, dict) or not isinstance(events, list):
         raise RuntimeError("Dashboard returned an invalid graph or event response")
 
@@ -92,8 +103,29 @@ def verify_repaired_demo(base_url: str, project_id: str) -> None:
             raise RuntimeError(f"Task completion event is missing for {task_id}")
 
 
-def run_flow(base_url: str, timeout: int) -> list[str]:
+def run_flow(
+    base_url: str,
+    timeout: int,
+    username: str | None = None,
+    password: str | None = None,
+) -> list[str]:
     """Run the flaw demo, wait for approval, approve it, and await release."""
+    token = None
+    if username or password:
+        if not username or not password:
+            raise RuntimeError("Both --username and --password are required for login")
+        login = request_json(
+            base_url,
+            "/auth/login",
+            {"username": username, "password": password},
+        )
+        if not isinstance(login, dict) or not isinstance(login.get("token"), str):
+            raise RuntimeError("Login endpoint did not return a signed session token")
+        token = login["token"]
+
+    def api(path: str, body: dict[str, object] | None = None) -> object:
+        return request_json(base_url, path, body, token)
+
     started_at = time.monotonic()
     deadline = started_at + timeout
     timeline: list[str] = []
@@ -105,7 +137,7 @@ def run_flow(base_url: str, timeout: int) -> list[str]:
             timeline.append(state)
             print(line, flush=True)
 
-    response = request_json(base_url, "/demo/run", {"flaw": True})
+    response = api("/demo/run", {"flaw": True})
     if not isinstance(response, dict) or not isinstance(response.get("project_id"), str):
         raise RuntimeError("Demo endpoint did not return a project ID")
     project_id = response["project_id"]
@@ -114,7 +146,7 @@ def run_flow(base_url: str, timeout: int) -> list[str]:
     approval_sent = False
     seen_events: set[str] = set()
     while time.monotonic() < deadline:
-        run_status = request_json(base_url, f"/demo/runs/{project_id}")
+        run_status = api(f"/demo/runs/{project_id}")
         if not isinstance(run_status, dict):
             raise RuntimeError("Demo-run endpoint returned invalid data")
         if run_status.get("status") == "failed":
@@ -122,7 +154,7 @@ def run_flow(base_url: str, timeout: int) -> list[str]:
             record(f"Run failed: {message}")
             raise RuntimeError(f"Demo run failed: {message}")
 
-        events = request_json(base_url, f"/projects/{project_id}/events")
+        events = api(f"/projects/{project_id}/events")
         if not isinstance(events, list):
             raise RuntimeError("Project events endpoint returned invalid data")
         for event in events:
@@ -145,9 +177,7 @@ def run_flow(base_url: str, timeout: int) -> list[str]:
             elif event_type == "task done" and event.get("task_id") == "todo-security":
                 record("Security passed")
 
-        status = request_json(
-            base_url, f"/projects/{project_id}/release-status"
-        )
+        status = api(f"/projects/{project_id}/release-status")
         if not isinstance(status, dict):
             raise RuntimeError("Release-status endpoint returned invalid data")
 
@@ -163,11 +193,11 @@ def run_flow(base_url: str, timeout: int) -> list[str]:
                 raise RuntimeError(
                     "Release gate requested approval before the demo run finished"
                 )
-            verify_repaired_demo(base_url, project_id)
+            verify_repaired_demo(base_url, project_id, token)
             if flow_state(status) != "Waiting for approval":
                 raise RuntimeError("Project is not waiting solely for human approval")
             record("Human approval is required")
-            request_json(base_url, f"/projects/{project_id}/approve", {})
+            api(f"/projects/{project_id}/approve", {})
             approval_sent = True
             record("Approval submitted")
         elif run_status.get("status") == "finished" and not approval_sent:
@@ -189,6 +219,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--username", default=os.getenv("CREWGRAPH_USERNAME"))
+    parser.add_argument("--password", default=os.getenv("CREWGRAPH_PASSWORD"))
     args = parser.parse_args()
     parsed = urlsplit(args.base_url)
     if (
@@ -202,7 +234,12 @@ def main() -> int:
         parser.error("Use an http localhost URL and a positive timeout.")
 
     try:
-        run_flow(args.base_url.rstrip("/"), args.timeout)
+        run_flow(
+            args.base_url.rstrip("/"),
+            args.timeout,
+            args.username,
+            args.password,
+        )
     except (RuntimeError, TimeoutError) as error:
         print(f"Dashboard flow failed: {error}", file=sys.stderr)
         return 1

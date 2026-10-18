@@ -215,6 +215,7 @@
     initializeStages();
     request("/config").then(config => {
       document.getElementById("llm-badge").textContent = config.llm_mode;
+      document.getElementById("logout").hidden = !config.auth_enabled;
     }).catch(error => {
       document.getElementById("llm-badge").textContent = `Config error: ${error.message}`;
     });
@@ -676,6 +677,14 @@
       try {
         await request(`/projects/${encodeURIComponent(picker.value)}/approve`, { method: "POST" });
         await refreshProject();
+      } catch (error) {
+        reportRefreshFailure(error);
+      }
+    });
+    document.getElementById("logout").addEventListener("click", async () => {
+      try {
+        await request("/auth/logout", { method: "POST" });
+        window.location.assign("/login");
       } catch (error) {
         reportRefreshFailure(error);
       }

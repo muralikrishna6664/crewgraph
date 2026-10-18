@@ -4,8 +4,8 @@ from pathlib import Path
 from threading import Lock, Thread
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from falkordb.graph import Graph
 from falkordb.node import Node
@@ -15,6 +15,13 @@ from redis.exceptions import ResponseError
 from agents.planner import Planner
 from agents.worker import _workspace_path
 from app import queries
+from app.auth import (
+    DemoSession,
+    auth_enabled,
+    create_session_token,
+    verify_password,
+    verify_session_token,
+)
 from app.db import get_graph
 from app.orchestrator import run_project
 from app.schema import init_project
@@ -26,6 +33,7 @@ _demo_runs_lock = Lock()
 _demo_runs: dict[str, dict[str, str]] = {}
 _max_artifact_size = 256 * 1024
 _default_prompt = "build a to-do app with a REST API and a simple web page"
+_session_cookie = "crewgraph_session"
 
 
 class DemoRunRequest(BaseModel):
@@ -35,21 +43,95 @@ class DemoRunRequest(BaseModel):
     flaw: bool = False
 
 
+class LoginRequest(BaseModel):
+    """Credentials for one of the synthetic demo accounts."""
+
+    username: str
+    password: str
+
+
+def current_session(request: Request) -> DemoSession | None:
+    """Resolve the request's signed session when authentication is enabled."""
+    if not auth_enabled():
+        return None
+    authorization = request.headers.get("authorization", "")
+    token = request.cookies.get(_session_cookie)
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    session = verify_session_token(token) if token else None
+    if session is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid session token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return session
+
+
+def _ensure_project_access(
+    project_id: str, session: DemoSession | None
+) -> None:
+    """Hide projects whose graph name is outside the authenticated tenant."""
+    if session is not None and not project_id.startswith(f"{session.tenant}_"):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
 @app.get("/")
-def dashboard() -> FileResponse:
-    """Serve the CrewGraph dashboard."""
+def dashboard(request: Request) -> Response:
+    """Serve the dashboard or redirect unauthenticated users to sign-in."""
+    if auth_enabled():
+        try:
+            current_session(request)
+        except HTTPException:
+            return RedirectResponse("/login", status_code=303)
     page = Path(__file__).parent / "static" / "index.html"
     return FileResponse(page, media_type="text/html")
 
 
+@app.get("/login")
+def login_page() -> FileResponse:
+    """Serve the public demo sign-in page."""
+    page = Path(__file__).parent / "static" / "login.html"
+    return FileResponse(page, media_type="text/html")
+
+
+@app.post("/auth/login")
+def login(credentials: LoginRequest, request: Request, response: Response) -> dict[str, str]:
+    """Verify a demo account and issue a signed session token."""
+    if not verify_password(credentials.username, credentials.password):
+        raise HTTPException(status_code=401, detail="Invalid tenant or password")
+    token = create_session_token(credentials.username)
+    response.set_cookie(
+        _session_cookie,
+        token,
+        max_age=8 * 60 * 60,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        path="/",
+    )
+    return {
+        "token": token,
+        "username": credentials.username,
+        "tenant": credentials.username,
+    }
+
+
+@app.post("/auth/logout")
+def logout(response: Response) -> dict[str, str]:
+    """Clear the browser's demo session cookie."""
+    response.delete_cookie(_session_cookie, path="/", httponly=True, samesite="lax")
+    return {"status": "logged out"}
+
+
 @app.get("/config")
-def public_config() -> dict[str, str]:
+def public_config() -> dict[str, object]:
     """Return the configured model mode for the dashboard badge."""
     provider = os.environ.get("LLM_PROVIDER", "mock").lower()
     if provider == "mock":
-        return {"llm_mode": "Mock LLM mode"}
+        return {"llm_mode": "Mock LLM mode", "auth_enabled": auth_enabled()}
     if provider == "openai":
-        return {"llm_mode": "Live LLM"}
+        return {"llm_mode": "Live LLM", "auth_enabled": auth_enabled()}
     raise HTTPException(status_code=503, detail=f"Unsupported LLM_PROVIDER: {provider}")
 
 
@@ -102,9 +184,13 @@ def _run_demo(project_id: str, flaw: bool) -> None:
 
 
 @app.post("/demo/run", status_code=202)
-def start_demo(request: DemoRunRequest) -> dict[str, str]:
+def start_demo(
+    request: DemoRunRequest,
+    session: DemoSession | None = Depends(current_session),
+) -> dict[str, str]:
     """Plan and start a build request in a background thread."""
-    project_id = f"dashboard_demo_{uuid4().hex[:12]}"
+    tenant_prefix = f"{session.tenant}_" if session is not None else ""
+    project_id = f"{tenant_prefix}dashboard_demo_{uuid4().hex[:12]}"
     with _demo_runs_lock:
         _demo_runs[project_id] = {"status": "starting", "message": ""}
     try:
@@ -130,8 +216,12 @@ def start_demo(request: DemoRunRequest) -> dict[str, str]:
 
 
 @app.get("/demo/runs/{project_id}")
-def demo_run_status(project_id: str) -> dict[str, str]:
+def demo_run_status(
+    project_id: str,
+    session: DemoSession | None = Depends(current_session),
+) -> dict[str, str]:
     """Return the in-process status and any error for a dashboard demo run."""
+    _ensure_project_access(project_id, session)
     with _demo_runs_lock:
         status = _demo_runs.get(project_id)
     if status is None:
@@ -182,14 +272,27 @@ def _project_nodes(project_id: str) -> tuple[Graph, list[Node], bool]:
 
 
 @app.get("/projects")
-def projects() -> list[str]:
+def projects(
+    session: DemoSession | None = Depends(current_session),
+) -> list[str]:
     """List project IDs backed by Project nodes in FalkorDB."""
-    return queries.list_projects()
+    project_ids = queries.list_projects()
+    if session is None:
+        return project_ids
+    return [
+        project_id
+        for project_id in project_ids
+        if project_id.startswith(f"{session.tenant}_")
+    ]
 
 
 @app.get("/projects/{project_id}/graph")
-def project_graph(project_id: str) -> dict[str, object]:
+def project_graph(
+    project_id: str,
+    session: DemoSession | None = Depends(current_session),
+) -> dict[str, object]:
     """Return project nodes and relationships in dashboard-friendly JSON."""
+    _ensure_project_access(project_id, session)
     graph, nodes, starting = _project_nodes(project_id)
     if starting:
         return {"nodes": [], "edges": [], "status": "starting"}
@@ -283,8 +386,12 @@ def project_graph(project_id: str) -> dict[str, object]:
 
 
 @app.get("/projects/{project_id}/events")
-def project_events(project_id: str) -> list[dict[str, object]]:
+def project_events(
+    project_id: str,
+    session: DemoSession | None = Depends(current_session),
+) -> list[dict[str, object]]:
     """Return recent persisted project events in chronological order."""
+    _ensure_project_access(project_id, session)
     graph, _, starting = _project_nodes(project_id)
     if starting:
         return []
@@ -292,8 +399,12 @@ def project_events(project_id: str) -> list[dict[str, object]]:
 
 
 @app.get("/projects/{project_id}/artifacts")
-def project_artifacts(project_id: str) -> list[dict[str, object]]:
+def project_artifacts(
+    project_id: str,
+    session: DemoSession | None = Depends(current_session),
+) -> list[dict[str, object]]:
     """List graph-backed project files with their version and producing agents."""
+    _ensure_project_access(project_id, session)
     graph, _, starting = _project_nodes(project_id)
     if starting:
         return []
@@ -323,8 +434,13 @@ def project_artifacts(project_id: str) -> list[dict[str, object]]:
 
 
 @app.get("/projects/{project_id}/artifacts/{artifact_id:path}")
-def project_artifact(project_id: str, artifact_id: str) -> dict[str, object]:
+def project_artifact(
+    project_id: str,
+    artifact_id: str,
+    session: DemoSession | None = Depends(current_session),
+) -> dict[str, object]:
     """Read a bounded workspace file only when it is registered in this graph."""
+    _ensure_project_access(project_id, session)
     graph, _, starting = _project_nodes(project_id)
     if starting:
         raise HTTPException(status_code=404, detail="Artifact not found")
@@ -356,8 +472,13 @@ def project_artifact(project_id: str, artifact_id: str) -> dict[str, object]:
 
 
 @app.get("/projects/{project_id}/tasks/{task_id}/context")
-def task_context(project_id: str, task_id: str) -> dict[str, object]:
+def task_context(
+    project_id: str,
+    task_id: str,
+    session: DemoSession | None = Depends(current_session),
+) -> dict[str, object]:
     """Return task handoff context from its project graph."""
+    _ensure_project_access(project_id, session)
     try:
         context = queries.handoff_context(get_graph(project_id), task_id)
     except ResponseError as error:
@@ -370,8 +491,12 @@ def task_context(project_id: str, task_id: str) -> dict[str, object]:
 
 
 @app.post("/projects/{project_id}/approve")
-def approve_project(project_id: str) -> dict[str, object]:
+def approve_project(
+    project_id: str,
+    session: DemoSession | None = Depends(current_session),
+) -> dict[str, object]:
     """Record human approval for a project's release."""
+    _ensure_project_access(project_id, session)
     graph = get_graph(project_id)
     try:
         approval = queries.approve_project(graph, project_id)
@@ -382,8 +507,12 @@ def approve_project(project_id: str) -> dict[str, object]:
 
 
 @app.get("/projects/{project_id}/release-status")
-def project_release_status(project_id: str) -> dict[str, object]:
+def project_release_status(
+    project_id: str,
+    session: DemoSession | None = Depends(current_session),
+) -> dict[str, object]:
     """Return the release gate status and all blocking reasons."""
+    _ensure_project_access(project_id, session)
     graph, _, starting = _project_nodes(project_id)
     if starting:
         return {

@@ -314,6 +314,40 @@ h2 { margin: 0 0 12px; color: #dfe7f2; font-size: 13px; }
 #events li::marker { color: var(--cyan); }
 #message { position: fixed; bottom: 8px; left: 14px; color: var(--pink); }
 
+.login-page { min-height: 100vh; }
+.login-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  height: auto;
+  min-height: 100vh;
+  place-items: center;
+  padding: 20px;
+}
+.login-card {
+  display: grid;
+  gap: 11px;
+  width: min(100%, 390px);
+  padding: 28px;
+  border: 1px solid #263348;
+  border-radius: 12px;
+  background: #0e131c;
+  box-shadow: 0 20px 80px rgb(0 0 0 / 38%), 0 0 35px rgb(102 75 177 / 10%);
+}
+.login-card h1 { margin: 0; color: #f4f7fb; font-size: 25px; }
+.login-card p { margin: 0 0 9px; color: var(--muted); font-size: 12px; }
+.login-card .login-kicker { color: var(--violet); font-size: 9px; letter-spacing: .12em; }
+.login-card input, .login-card select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #2b3748;
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: #e4eaf4;
+  background: #080c13;
+  font: inherit;
+}
+#login-message { min-height: 18px; color: var(--pink); font-size: 11px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

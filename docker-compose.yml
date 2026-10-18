@@ -29,6 +29,8 @@ services:
     environment:
       FALKORDB_HOST: falkordb
       LLM_PROVIDER: mock
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
+      SECRET_KEY: "${SECRET_KEY:-crewgraph-demo-only-change-this-secret}"
     healthcheck:
       test:
         [
