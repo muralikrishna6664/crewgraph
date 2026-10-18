@@ -87,6 +87,8 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert "consecutiveRefreshFailures = 0" in script
     assert "const projectRefreshVersion = ++projectsRefreshVersion" in script
     assert "if (projectRefreshVersion !== projectsRefreshVersion)" in script
+    assert "window.setTimeout(poll, 500)" in script
+    assert "setInterval(poll, 500)" not in script
     assert "preferred || picker.value || activeRunId" in script
     assert "projectNames.push(activeRunId)" in script
     assert "await refreshProjects(started.project_id)" in script

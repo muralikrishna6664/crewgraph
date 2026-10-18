@@ -1442,7 +1442,8 @@
         message.textContent = "";
       } catch (error) {
         reportRefreshFailure(error);
+      } finally {
+        window.setTimeout(poll, 500);
       }
     }
     poll();
-    setInterval(poll, 500);
