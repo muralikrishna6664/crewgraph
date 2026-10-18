@@ -203,7 +203,11 @@ The function's Python checks require the project to exist, every task to be `don
 
 The default is `LLM_PROVIDER=mock`, so the demo runs without a key or model network request. The mock planner returns a canned DAG; mock workers and debugger return canned file contents. The following parts are real application behavior: graph scheduling and atomic claims, graph-backed handoffs, real HTTP checks against the generated app on localhost, static security scanning, bug/fix links, lease recovery, human approval, and the release gate.
 
-The dashboard shows the active provider as **Mock LLM mode** or **Live LLM**. Its prompt is sent to the planner; mock mode intentionally keeps the canned DAG, while a configured live provider can produce a prompt-specific plan. The graph, recent-event caption, stage transitions, progress bar, node/edge animations, and 4× Replay all use persisted FalkorDB state and `/events` results. Replay does not synthesize events.
+The dashboard shows the active provider as **Mock LLM mode** or **Live LLM**. Its prompt is sent to the planner; mock mode intentionally keeps the canned DAG, while a configured live provider can produce a prompt-specific plan. The graph, recent-event caption, stage transitions, progress bar, and animations use persisted FalkorDB state and real `/events` results; replay does not synthesize events.
+
+The graph uses a fixed preset lane layout: dependency-ordered task columns are spaced 190px apart, each task's agent lane is above it, and its versioned artifacts and findings are below. Parallel tasks share a column, while the Project node and `PART_OF` edges stay in FalkorDB but are omitted from the canvas. A per-project position cache keeps existing nodes anchored as polls discover new graph data. New nodes fade in at their final positions, and particles travel only for events that match a displayed graph edge. Labels have full-text hover tooltips, and reduced-motion preferences disable movement.
+
+Event presentation is paced in the browser with a minimum 900ms between live visual steps. Choose 0.5×, 1×, or 2× for the animation speed; Replay uses the same event queue at 2× by default. For demo pacing for viewing, `/demo/run` waits 1200ms between agent claims by default (`DEMO_STEP_DELAY_MS=1200`); set it to `0` to run without the server-side pauses. Tests and direct demo/load-test scripts use zero delay.
 
 The dashboard and login use a white, light-theme background while retaining high-contrast graph status colors.
 
@@ -333,7 +337,7 @@ All demo app HTTP requests target localhost. The security flaw key is fake; neit
 
 ## Tests and measured results
 
-The current suite has **36 passing tests** and uses real local FalkorDB for graph integration tests; temporary test graphs are deleted. `tests/conftest.py` disables auth by default, with explicit auth tests opting in. Mock/unit tests do not call a live model provider.
+The Python suite uses real local FalkorDB for graph integration tests; temporary test graphs are deleted. The fixed-lane placement logic also has a dependency-free Node test (`node --test tests/test_graph_layout.js`). `tests/conftest.py` disables auth and demo pacing by default, with explicit auth tests opting in. Mock/unit tests do not call a live model provider.
 
 ```powershell
 python -m pytest -q
@@ -352,4 +356,4 @@ The 20-project mock load run completed 80 tasks in 11.04 seconds (7.25 tasks/sec
 - The dashboard loads pinned Cytoscape.js from a CDN and needs access to that CDN in the browser.
 - Future work: persist richer agent episodes and lessons, broaden security checks, validate more model providers, and benchmark unthrottled concurrency against a suitably configured FalkorDB deployment.
 
-Dashboard captures: [login](./docs/img/login.png), [mid-run pulse](./docs/img/mid-run.png), and [finished output](./docs/img/finished-output.png).
+Dashboard captures: [login](./docs/img/login.png), [run start](./docs/img/start-run.png), [mid-run pulse](./docs/img/mid-run.png), and [finished output](./docs/img/finished-output.png).

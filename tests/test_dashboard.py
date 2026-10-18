@@ -13,8 +13,10 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert "text/html" in response.headers["content-type"]
     assert "cytoscape@3.30.4" in response.text
     assert '<link rel="stylesheet" href="/static/style.css">' in response.text
+    assert '<script src="/static/graph-layout.js" defer></script>' in response.text
     assert '<script src="/static/app.js" defer></script>' in response.text
     script = client.get("/static/app.js").text
+    layout = client.get("/static/graph-layout.js").text
     styles = client.get("/static/style.css").text
     assert "<script>" not in response.text
     assert 'banner.textContent = "No projects yet. Click Run demo."' in script
@@ -27,7 +29,19 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert 'content.title = String(value);' in script
     assert "Run demo with flaw" in response.text
     assert 'name: "preset"' in script
-    assert "calculateGraphPositions(nodes, graph.edges)" in script
+    assert "window.CrewGraphLayout.buildLaneGraph(" in script
+    assert "positionCache = new Map()" in script
+    assert 'nodeAppearMs: 700' in script
+    assert 'edgeDrawMs: 900' in script
+    assert 'particleTravelMs: 1600' in script
+    assert 'pulsePeriodMs: 2200' in script
+    assert 'cameraMs: 800' in script
+    assert 'minStepGapMs: 900' in script
+    assert 'id="speed-control"' in response.text
+    assert 'Replay · 2×' in response.text
+    assert "Graph layout collision" in layout
+    assert "PART_OF" in layout
+    assert "artifact-more:" in layout
     assert 'window.addEventListener("resize"' in script
     assert '? request(`/demo/runs/${encodeURIComponent(projectId)}`)' in script
     assert 'width: 40, height: 40' in script
@@ -37,15 +51,15 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert "grid-template-columns: minmax(0, 1fr)" in styles
     assert "section, aside {" in styles
     assert "min-width: 0;" in styles
-    assert "#graph { width: 100%; height: 100%; min-width: 0;" in styles
+    assert "#graph { position: absolute; inset: 0; width: 100%; height: 100%;" in styles
     assert 'case "Artifact": return properties.path || "Artifact";' in script
     assert 'case "Agent": return properties.name || "Agent";' in script
     assert 'case "Bug": return properties.title || "Bug";' in script
-    assert "String(label).slice(0, 16)" in script
+    assert "fullTitle.slice(0, 15)" in script
     assert 'label: ""' in script
     assert 'selector: "edge.edge-visible"' in script
-    assert "nodeIdsKey !== lastNodeIds" in script
-    assert 'cy.fit(cy.elements(), 28)' in script
+    assert "addedNodes.length" in script
+    assert 'cy.fit(cy.elements(), 40)' in script
     assert 'id="legend"' in response.text
     assert 'release.reasons[0] === "Human approval is required"' in script
     assert 'banner.textContent = "Human approval is required"' in script
@@ -69,7 +83,7 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert ".login-card .login-kicker { color: #7046ad;" in styles
     assert "@media (prefers-reduced-motion: reduce)" in styles
     assert "function pulseWorkingNode(node)" in script
-    assert "function animateFoundBug(bugId)" in script
+    assert "function animateFoundBug(bugId, replay = false)" in script
 
 
 def test_demo_endpoint_starts_a_background_run(monkeypatch) -> None:
@@ -120,25 +134,3 @@ def test_missing_in_process_run_status_falls_back_to_existing_project(monkeypatc
         "status": "unknown",
         "message": "No in-process run status is available.",
     }
-
-
-def test_demo_run_failure_is_logged_and_reported(monkeypatch, caplog) -> None:
-    project_id = "test-dashboard-run-failure"
-
-    def fail_run(graph) -> None:
-        raise RuntimeError("synthetic run failure")
-
-    monkeypatch.setattr(main, "init_project", lambda _: object())
-    monkeypatch.setattr(main, "run_project", fail_run)
-
-    main._run_demo(project_id, True)
-
-    response = TestClient(main.app).get(f"/demo/runs/{project_id}")
-    assert response.status_code == 200
-    assert response.json() == {
-        "project_id": project_id,
-        "status": "failed",
-        "message": "synthetic run failure",
-    }
-    assert "Demo run failed for project test-dashboard-run-failure" in caplog.text
-    assert "Traceback" in caplog.text

@@ -24,7 +24,7 @@ def run_one_project(project_id: str) -> dict[str, object]:
         queries.link_tasks_to_project(
             graph, project_id, [task["id"] for task in tasks]
         )
-        statuses = run_project(graph)
+        statuses = run_project(graph, step_delay_ms=0)
         return {
             "project_id": project_id,
             "tasks": len(tasks),

@@ -10,10 +10,17 @@
 <body>
   <header>
     <h1>CrewGraph</h1>
+    <span id="project-name">No project selected</span>
     <span id="llm-badge" class="llm-badge">Loading model mode…</span>
     <label for="project-picker">Project</label>
     <select id="project-picker" aria-label="Project"></select>
-    <button id="replay-events" type="button" disabled>Replay · 4×</button>
+    <label for="speed-control">Speed</label>
+    <select id="speed-control" aria-label="Animation speed">
+      <option value="0.5">0.5×</option>
+      <option value="1" selected>1×</option>
+      <option value="2">2×</option>
+    </select>
+    <button id="replay-events" type="button" disabled>Replay · 2×</button>
     <button id="approve" class="primary">Approve</button>
     <button id="logout" type="button" hidden>Log out</button>
   </header>
@@ -31,12 +38,19 @@
     <span class="legend-item"><i class="legend-swatch open-bug"></i>Open bug</span>
     <span class="legend-item"><i class="legend-swatch fixed-bug"></i>Fixed bug</span>
     <span class="legend-item"><i class="legend-swatch artifact"></i>Artifact</span>
-    <span class="legend-item"><i class="legend-swatch other"></i>Project / approval</span>
+    <span class="legend-item"><i class="legend-swatch other"></i>Prompt / approval / output</span>
   </div>
   <main>
     <section aria-label="Project graph">
       <div id="stage-strip" aria-label="Build pipeline stages"></div>
-      <div id="graph"></div>
+      <div id="graph-area">
+        <div id="lane-labels" aria-hidden="true">
+          <span>Agents</span>
+          <span>Tasks</span>
+          <span>Files</span>
+        </div>
+        <div id="graph"></div>
+      </div>
       <div id="graph-caption">
         <span id="latest-event">Waiting for project events.</span>
         <span id="progress-track" role="progressbar" aria-label="Completed tasks">
@@ -69,6 +83,7 @@
     </aside>
   </main>
   <div id="message" role="status"></div>
+  <script src="/static/graph-layout.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

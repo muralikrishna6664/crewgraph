@@ -40,10 +40,10 @@ def main() -> None:
     )
 
     print(f"Running demo project {project_id} in mock mode.")
-    statuses = run_project(graph)
+    statuses = run_project(graph, step_delay_ms=0)
     if args.auto_approve:
         queries.approve_project(graph, project_id)
-        statuses = run_project(graph)
+        statuses = run_project(graph, step_delay_ms=0)
     else:
         gate = queries.release_status(graph, project_id)
         if not gate["can_release"]:

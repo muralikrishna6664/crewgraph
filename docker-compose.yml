@@ -33,6 +33,7 @@ services:
       LLM_PROVIDER: mock
       AUTH_ENABLED: "${AUTH_ENABLED:-true}"
       SECRET_KEY: "${SECRET_KEY:-crewgraph-demo-only-change-this-secret}"
+      DEMO_STEP_DELAY_MS: "${DEMO_STEP_DELAY_MS:-1200}"
     healthcheck:
       test:
         [

@@ -161,11 +161,19 @@ def _prepare_demo(project_id: str, prompt: str, flaw: bool) -> None:
 def _run_demo(project_id: str, flaw: bool) -> None:
     """Run a prepared project in an isolated background thread."""
     try:
+        try:
+            step_delay_ms = int(os.environ.get("DEMO_STEP_DELAY_MS", "1200"))
+        except ValueError as error:
+            raise ValueError(
+                "DEMO_STEP_DELAY_MS must be a non-negative integer"
+            ) from error
+        if step_delay_ms < 0:
+            raise ValueError("DEMO_STEP_DELAY_MS must be a non-negative integer")
         with _demo_lock:
             previous_flaw = os.environ.get("DEMO_FLAW")
             os.environ["DEMO_FLAW"] = "1" if flaw else "0"
             try:
-                run_project(init_project(project_id))
+                run_project(init_project(project_id), step_delay_ms=step_delay_ms)
             finally:
                 if previous_flaw is None:
                     os.environ.pop("DEMO_FLAW", None)

@@ -33,11 +33,26 @@ header {
   border-bottom: 1px solid var(--border);
 }
 
+#project-picker { width: min(22vw, 250px); min-width: 110px; }
+#speed-control { width: 88px; }
+header button { white-space: nowrap; }
+
 header h1 {
-  margin: 0 auto 0 0;
+  margin: 0;
   color: #182433;
   font: 700 19px "Cascadia Code", Consolas, monospace;
   letter-spacing: -.04em;
+}
+
+#project-name {
+  min-width: 80px;
+  max-width: 24vw;
+  margin-right: auto;
+  overflow: hidden;
+  color: #34445a;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
 }
 
 label { color: #526277; font-size: 11px; }
@@ -159,7 +174,23 @@ section, aside {
 }
 
 section { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
-#graph { width: 100%; height: 100%; min-width: 0; min-height: 250px; }
+#graph-area { position: relative; min-width: 0; min-height: 250px; overflow: hidden; }
+#graph { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 250px; }
+
+#lane-labels {
+  position: absolute;
+  z-index: 1;
+  inset: 0 auto 0 0;
+  width: 56px;
+  color: #a0adbd;
+  pointer-events: none;
+  font-size: 9px;
+}
+
+#lane-labels span { position: absolute; left: 5px; opacity: .62; }
+#lane-labels span:nth-child(1) { top: calc(50% - 170px); }
+#lane-labels span:nth-child(2) { top: 50%; }
+#lane-labels span:nth-child(3) { top: calc(50% + 170px); }
 
 #stage-strip {
   display: flex;
@@ -180,7 +211,7 @@ section { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
   color: #526277;
   text-align: center;
   font-size: 9px;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .stage-step::before {
@@ -199,7 +230,7 @@ section { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
   border-color: var(--blue);
   background: var(--blue);
   box-shadow: 0 0 12px var(--blue);
-  animation: stage-pulse 1.4s ease-in-out infinite;
+  animation: stage-pulse var(--pulse-period, 2.2s) ease-in-out infinite;
 }
 
 .stage-link {
@@ -219,7 +250,7 @@ section { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
   border-radius: 50%;
   background: var(--cyan);
   box-shadow: 0 0 8px var(--cyan);
-  animation: travel-stage-dot .7s ease-out forwards;
+  animation: travel-stage-dot 1.6s ease-out forwards;
 }
 
 @keyframes stage-pulse {
@@ -358,12 +389,14 @@ h2 { margin: 0 0 12px; color: #182433; font-size: 13px; }
   .stage-step.active::before, .travel-dot { animation: none !important; }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1000px) {
   header { flex-wrap: wrap; }
   header h1 { width: 100%; }
+  #project-name { max-width: 100%; margin-right: auto; }
+  #project-picker { width: 180px; }
   .prompt-bar { flex-wrap: wrap; }
   .prompt-bar label { width: 100%; }
   main { height: auto; grid-template-columns: minmax(0, 1fr); }
-  section { height: 58vh; }
+  section { height: 70vh; }
   aside { height: 90vh; grid-template-rows: minmax(300px, 1.7fr) minmax(150px, .8fr) minmax(120px, .8fr); }
 }

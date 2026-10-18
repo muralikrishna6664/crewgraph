@@ -1,7 +1,20 @@
+    const TIMINGS = {
+      nodeAppearMs: 700,
+      edgeDrawMs: 900,
+      particleTravelMs: 1600,
+      pulsePeriodMs: 2200,
+      cameraMs: 800,
+      minStepGapMs: 900,
+      nodePulseInMs: 480,
+      edgeStaggerMs: 24,
+      bugShakeStepMs: 100,
+      fixedBugFlashMs: 700
+    };
     const picker = document.getElementById("project-picker");
     const banner = document.getElementById("release-banner");
     const message = document.getElementById("message");
     const promptInput = document.getElementById("build-prompt");
+    const speedControl = document.getElementById("speed-control");
     const colors = {
       Project: "#b98aff", Prompt: "#b98aff", Output: "#b98aff",
       Agent: "#5b9dff", Artifact: "#4de3ef", Vulnerability: "#ff527f",
@@ -9,7 +22,7 @@
     };
     const stageNames = ["Planner", "Backend / Frontend", "Tester", "Debugger", "Security", "Approval", "Release"];
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let lastNodeIds = null;
+    let positionCache = new Map();
     let selectedNodeId = null;
     let hoveredNodeId = null;
     let activeRunId = null;
@@ -21,9 +34,15 @@
     let selectedArtifactId = null;
     let manualPreviewSelection = false;
     let previewProjectId = null;
-    let replayTimeouts = [];
-    let replayVersion = 0;
     let replayActive = false;
+    let visualEventQueue = [];
+    let visualEventTimer = null;
+    let lastVisualStepAt = 0;
+    let particleSequence = 0;
+
+    function playbackMultiplier(replay = false) {
+      return Number(speedControl.value) * (replay ? 2 : 1);
+    }
 
     function initializeStages() {
       const strip = document.getElementById("stage-strip");
@@ -31,6 +50,10 @@
         const step = document.createElement("div");
         step.className = "stage-step";
         step.dataset.stage = String(index);
+        step.style.setProperty(
+          "--pulse-period",
+          `${TIMINGS.pulsePeriodMs / playbackMultiplier()}ms`
+        );
         const label = document.createElement("span");
         label.className = "stage-label";
         label.textContent = name;
@@ -79,6 +102,18 @@
       });
     }
 
+    function animateStageTravel(stageIndex, replay = false) {
+      if (stageIndex === null || stageIndex <= 0) return;
+      const link = document.querySelector(`.stage-link[data-link="${stageIndex - 1}"]`);
+      if (!link) return;
+      const dot = document.createElement("i");
+      dot.className = "travel-dot";
+      dot.style.animationDuration =
+        `${TIMINGS.particleTravelMs / playbackMultiplier(replay)}ms`;
+      link.append(dot);
+      dot.addEventListener("animationend", () => dot.remove(), { once: true });
+    }
+
     function stageForEvent(event, tasksById) {
       if (event.type === "bug found" || event.type === "bug fixed") return 3;
       const task = tasksById.get(event.task_id);
@@ -89,16 +124,6 @@
       if (skill === "security") return 4;
       if (skill === "release") return 6;
       return null;
-    }
-
-    function animateStageTravel(stageIndex) {
-      if (stageIndex === null || stageIndex <= 0) return;
-      const link = document.querySelector(`.stage-link[data-link="${stageIndex - 1}"]`);
-      if (!link) return;
-      const dot = document.createElement("i");
-      dot.className = "travel-dot";
-      link.append(dot);
-      dot.addEventListener("animationend", () => dot.remove(), { once: true });
     }
 
     async function showArtifactPreview(projectId, artifact) {
@@ -157,59 +182,136 @@
       }
     }
 
+    function findEventEdge(event) {
+      if (event.type === "task claimed") {
+        return cy.edges().filter(edge =>
+          edge.data("type") === "AGENT_TASK" && edge.data("target") === event.task_id
+        ).first();
+      }
+      if (event.type === "artifact created") {
+        return cy.edges().filter(edge =>
+          edge.data("type") === "FOR_TASK"
+          && edge.data("source") === event.task_id
+          && edge.data("target") === event.artifact_id
+        ).first();
+      }
+      if (event.type === "bug found" || event.type === "bug fixed") {
+        return cy.edges().filter(edge =>
+          (event.type === "bug found"
+            ? edge.data("type") === "FOUND_IN"
+            : ["FIXES", "FIXED_BY"].includes(edge.data("type")))
+          && (edge.data("target") === event.bug_id || edge.data("source") === event.bug_id)
+        ).first();
+      }
+      if (event.type === "task done") {
+        return cy.edges().filter(edge =>
+          edge.data("source") === event.task_id
+          && ["DEPENDS_ON", "SPINE"].includes(edge.data("type"))
+        ).first();
+      }
+      return cy.collection();
+    }
+
+    function animateEventEdge(event, replay = false) {
+      if (reducedMotion) return;
+      const edge = findEventEdge(event);
+      if (!edge || !edge.length) return;
+      const source = edge.source().position();
+      const target = edge.target().position();
+      const particle = cy.add({
+        data: { id: `event-particle-${++particleSequence}` },
+        position: source,
+        classes: "particle"
+      });
+      particle.animate({ position: target }, {
+        duration: TIMINGS.particleTravelMs / playbackMultiplier(replay),
+        complete: () => particle.remove()
+      });
+    }
+
+    function applyVisualEvent(item) {
+      document.getElementById("latest-event").textContent =
+        describeEvent(item.event, item.tasksById);
+      animateStageTravel(stageForEvent(item.event, item.tasksById), item.replay);
+      if (item.event.type === "bug found") {
+        animateFoundBug(item.event.bug_id, item.replay);
+      }
+      if (item.event.type === "bug fixed") {
+        animateFixedBug(item.event.bug_id, item.replay);
+      }
+      animateEventEdge(item.event, item.replay);
+      const targetId = item.event.task_id || item.event.artifact_id || item.event.bug_id;
+      const node = targetId && cy.$id(targetId);
+      if (node && node.length && !reducedMotion) {
+        node.animate({ style: { "underlay-padding": 16, "underlay-opacity": 0.95 } }, {
+          duration: TIMINGS.nodePulseInMs / playbackMultiplier(item.replay),
+          complete: () => node.animate({
+            style: { "underlay-padding": 9, "underlay-opacity": 0.34 }
+          }, { duration: TIMINGS.nodePulseInMs / playbackMultiplier(item.replay) })
+        });
+      }
+    }
+
+    function scheduleVisualEvent() {
+      if (visualEventTimer !== null || !visualEventQueue.length) {
+        if (!visualEventQueue.length && replayActive) {
+          replayActive = false;
+          document.getElementById("replay-events").disabled = false;
+        }
+        return;
+      }
+      const next = visualEventQueue[0];
+      const multiplier = playbackMultiplier(next.replay);
+      const gap = next.gapMs === undefined
+        ? TIMINGS.minStepGapMs
+        : Math.max(TIMINGS.minStepGapMs, next.gapMs);
+      const wait = lastVisualStepAt
+        ? Math.max(0, lastVisualStepAt + gap / multiplier - Date.now())
+        : 0;
+      visualEventTimer = window.setTimeout(() => {
+        visualEventTimer = null;
+        const item = visualEventQueue.shift();
+        if (item) {
+          applyVisualEvent(item);
+          lastVisualStepAt = Date.now();
+        }
+        scheduleVisualEvent();
+      }, wait);
+    }
+
+    function enqueueVisualEvent(event, tasksById, replay = false, gapMs) {
+      visualEventQueue.push({ event, tasksById, replay, gapMs });
+      scheduleVisualEvent();
+    }
+
     function stopReplay() {
-      replayVersion += 1;
-      replayTimeouts.forEach(timer => window.clearTimeout(timer));
-      replayTimeouts = [];
+      if (visualEventTimer !== null) window.clearTimeout(visualEventTimer);
+      visualEventTimer = null;
+      visualEventQueue = [];
       replayActive = false;
       document.getElementById("replay-events").disabled = false;
     }
 
-    function animateReplayEvent(event, tasksById) {
-      document.getElementById("latest-event").textContent =
-        describeEvent(event, tasksById);
-      animateStageTravel(stageForEvent(event, tasksById));
-      if (event.type === "bug found") animateFoundBug(event.bug_id);
-      if (reducedMotion) return;
-      const targetId = event.task_id || event.artifact_id || event.bug_id;
-      if (!targetId) return;
-      const node = cy.$id(targetId);
-      if (!node.length) return;
-      node.animate({ style: { "underlay-padding": 16, "underlay-opacity": 0.95 } }, {
-        duration: 180,
-        complete: () => node.animate({
-          style: { "underlay-padding": 9, "underlay-opacity": 0.34 }
-        }, { duration: 100 })
-      });
-    }
-
     function replayEvents(events, tasksById) {
       stopReplay();
-      const version = replayVersion;
-      const button = document.getElementById("replay-events");
-      button.disabled = true;
-      replayActive = events.length > 0;
-      let elapsed = 0;
+      if (!events.length) {
+        document.getElementById("replay-events").disabled = true;
+        return;
+      }
+      replayActive = true;
+      document.getElementById("replay-events").disabled = true;
       let previousTimestamp = null;
-      events.forEach((event, index) => {
+      for (const event of events) {
         const timestamp = Number(event.ts);
-        if (Number.isFinite(timestamp)) {
-          if (previousTimestamp !== null && timestamp >= previousTimestamp) {
-            elapsed += (timestamp - previousTimestamp) / 4;
-          }
-          previousTimestamp = timestamp;
+        let gapMs;
+        if (Number.isFinite(timestamp) && previousTimestamp !== null) {
+          gapMs = Math.max(0, timestamp - previousTimestamp);
         }
-        const timer = window.setTimeout(() => {
-          if (version !== replayVersion) return;
-          animateReplayEvent(event, tasksById);
-          if (index === events.length - 1) {
-            replayActive = false;
-            button.disabled = false;
-          }
-        }, elapsed);
-        replayTimeouts.push(timer);
-      });
-      if (!events.length) button.disabled = true;
+        if (Number.isFinite(timestamp)) previousTimestamp = timestamp;
+        visualEventQueue.push({ event, tasksById, replay: true, gapMs });
+      }
+      lastVisualStepAt = 0;
+      scheduleVisualEvent();
     }
 
     initializeStages();
@@ -257,7 +359,7 @@
             },
             "underlay-padding": 9, "underlay-opacity": 0.34,
             "transition-property": "opacity, width, height, underlay-padding",
-            "transition-duration": "220ms"
+            "transition-duration": `${TIMINGS.nodeAppearMs}ms`
           }
         },
         {
@@ -273,14 +375,32 @@
           style: { "border-color": "#fff0a8", "underlay-color": "#ff527f", "underlay-padding": 16, "underlay-opacity": 1 }
         },
         {
+          selector: "node.fixed-flash",
+          style: { "underlay-color": "#55e69a", "underlay-padding": 18, "underlay-opacity": 1 }
+        },
+        {
+          selector: "node.particle",
+          style: {
+            width: 8, height: 8, label: "", "background-color": "#087d8a",
+            "border-width": 0, "underlay-color": "#4de3ef",
+            "underlay-padding": 8, "underlay-opacity": 0.9,
+            "z-index": 1000
+          }
+        },
+        {
           selector: "edge",
           style: {
             width: 1.5, "line-color": "#9eacbd", "target-arrow-color": "#70829a",
             "target-arrow-shape": "triangle", "curve-style": "bezier",
             label: "", "font-size": 9, color: "#526277",
             "text-background-color": "#fff", "text-background-opacity": 0.9,
-            opacity: 0.88, "transition-property": "opacity", "transition-duration": "220ms"
+            opacity: 0.88, "transition-property": "opacity",
+            "transition-duration": `${TIMINGS.edgeDrawMs}ms`
           }
+        },
+        {
+          selector: 'edge[type = "SPINE"], edge[type = "DEPENDS_ON"], edge[type = "AGENT_TASK"], edge[type = "FOR_TASK"], edge[type = "FOUND_IN"]',
+          style: { "curve-style": "straight" }
         },
         {
           selector: "edge.drawing",
@@ -303,7 +423,7 @@
 
     window.addEventListener("resize", () => {
       cy.resize();
-      if (cy.elements().length) cy.fit(cy.elements(), 28);
+      if (cy.elements().length) cy.fit(cy.elements(), 40);
     });
 
     cy.on("tap", "node", event => {
@@ -317,11 +437,13 @@
 
     cy.on("mouseover", "node", event => {
       hoveredNodeId = event.target.id();
+      cy.container().title = event.target.data("fullTitle") || event.target.data("title") || "";
       showNodeEdges(hoveredNodeId);
     });
 
     cy.on("mouseout", "node", () => {
       hoveredNodeId = null;
+      cy.container().removeAttribute("title");
       showNodeEdges(selectedNodeId);
     });
 
@@ -387,12 +509,13 @@
 
     function pulseWorkingNode(node) {
       if (reducedMotion || !node.hasClass("working")) return;
+      const halfPeriod = TIMINGS.pulsePeriodMs / (2 * playbackMultiplier(replayActive));
       node.animate({ style: { "underlay-padding": 16 } }, {
-        duration: 650,
+        duration: halfPeriod,
         complete: () => {
           if (!node.hasClass("working")) return;
           node.animate({ style: { "underlay-padding": 7 } }, {
-            duration: 650,
+            duration: halfPeriod,
             complete: () => pulseWorkingNode(node)
           });
         }
@@ -414,25 +537,44 @@
 
     function revealEdges(edgeIds) {
       edgeIds.forEach((id, index) => {
-        window.setTimeout(
-          () => cy.$id(id).removeClass("drawing"),
-          reducedMotion ? 0 : index * 55
-        );
+        const edge = cy.$id(id);
+        if (reducedMotion) {
+          edge.removeClass("drawing");
+          return;
+        }
+        window.setTimeout(() => {
+          if (!edge.length) return;
+          edge.animate({ style: { opacity: 0.88 } }, {
+            duration: TIMINGS.edgeDrawMs / playbackMultiplier(),
+            complete: () => edge.removeClass("drawing")
+          });
+        }, index * TIMINGS.edgeStaggerMs / playbackMultiplier());
       });
     }
 
-    function animateFoundBug(bugId) {
+    function animateFoundBug(bugId, replay = false) {
       const bug = cy.$id(bugId);
-      if (!bug.length || reducedMotion) return;
+      if (!bug.length) return;
+      if (reducedMotion) return;
       bug.addClass("shaking");
       const origin = bug.position();
       bug.animate({ position: { x: origin.x + 5, y: origin.y } }, {
-        duration: 55,
+        duration: TIMINGS.bugShakeStepMs / playbackMultiplier(replay),
         complete: () => bug.animate({ position: origin }, {
-          duration: 65,
+          duration: TIMINGS.bugShakeStepMs / playbackMultiplier(replay),
           complete: () => bug.removeClass("shaking")
         })
       });
+    }
+
+    function animateFixedBug(bugId, replay = false) {
+      const bug = cy.$id(bugId);
+      if (!bug.length || reducedMotion) return;
+      bug.addClass("fixed-flash");
+      window.setTimeout(
+        () => bug.removeClass("fixed-flash"),
+        TIMINGS.fixedBugFlashMs / playbackMultiplier(replay)
+      );
     }
 
     function describeEvent(event, tasksById) {
@@ -447,103 +589,6 @@
       if (event.type === "bug fixed") return `Bug fixed: ${event.bug_id}`;
       if (event.type === "artifact created") return event.detail || "Artifact created";
       return `${event.type}${event.detail ? `: ${event.detail}` : ""}`;
-    }
-
-    function calculateGraphPositions(nodes, edges) {
-      const tasks = nodes.filter(node => node.label === "Task");
-      const dependencies = new Map(tasks.map(task => [task.id, []]));
-      for (const edge of edges.filter(item => item.type === "DEPENDS_ON")) {
-        if (dependencies.has(edge.source)) dependencies.get(edge.source).push(edge.target);
-      }
-      const levels = new Map();
-      function levelOf(taskId, visiting = new Set()) {
-        if (levels.has(taskId)) return levels.get(taskId);
-        if (visiting.has(taskId)) return 0;
-        const next = new Set(visiting);
-        next.add(taskId);
-        const dependsOn = dependencies.get(taskId) || [];
-        const level = dependsOn.length
-          ? 1 + Math.max(...dependsOn.map(id => levelOf(id, next)))
-          : 0;
-        levels.set(taskId, level);
-        return level;
-      }
-      tasks.forEach(task => levelOf(task.id));
-      const columns = new Map();
-      for (const task of tasks) {
-        const level = levels.get(task.id) || 0;
-        if (!columns.has(level)) columns.set(level, []);
-        columns.get(level).push(task);
-      }
-
-      const positions = new Map();
-      const prompt = nodes.find(node => node.label === "Prompt");
-      const output = nodes.find(node => node.label === "Output");
-      const maxLevel = Math.max(0, ...levels.values());
-      const outputX = (maxLevel + 2) * 230;
-      if (prompt) positions.set(prompt.id, { x: 40, y: 0 });
-      if (output) positions.set(output.id, { x: outputX, y: 0 });
-
-      for (const [level, items] of columns) {
-        items.sort((left, right) => left.id.localeCompare(right.id));
-        items.forEach((task, index) => {
-          positions.set(task.id, {
-            x: 190 + level * 230,
-            y: (index - (items.length - 1) / 2) * 125
-          });
-        });
-      }
-      const project = nodes.find(node => node.label === "Project");
-      if (project) positions.set(project.id, { x: 40, y: -145 });
-
-      const taskForArtifact = new Map();
-      const artifactEdges = edges.filter(edge => edge.type === "FOR_TASK");
-      const artifactCounts = new Map();
-      for (const edge of artifactEdges) {
-        const taskPosition = positions.get(edge.target);
-        if (!taskPosition) continue;
-        taskForArtifact.set(edge.source, edge.target);
-        const index = artifactCounts.get(edge.target) || 0;
-        artifactCounts.set(edge.target, index + 1);
-        positions.set(edge.source, {
-          x: taskPosition.x + 70,
-          y: taskPosition.y + 68 + index * 78
-        });
-      }
-
-      const agents = new Map();
-      for (const edge of edges.filter(item => item.type === "PRODUCED_BY")) {
-        const taskId = taskForArtifact.get(edge.source);
-        const taskPosition = taskId ? positions.get(taskId) : null;
-        if (!taskPosition) continue;
-        if (!agents.has(edge.target)) agents.set(edge.target, []);
-        agents.get(edge.target).push(taskPosition);
-      }
-      for (const [agentId, taskPositions] of agents) {
-        positions.set(agentId, {
-          x: taskPositions[0].x,
-          y: taskPositions.reduce((sum, point) => sum + point.y, 0) / taskPositions.length - 72
-        });
-      }
-
-      for (const edge of edges.filter(item => item.type === "FOUND_IN")) {
-        const artifactPosition = positions.get(edge.target);
-        if (artifactPosition) {
-          positions.set(edge.source, {
-            x: artifactPosition.x + 52,
-            y: artifactPosition.y + 78
-          });
-        }
-      }
-      const approval = nodes.find(node => node.label === "Approval");
-      if (approval) positions.set(approval.id, { x: outputX - 90, y: -145 });
-
-      nodes.forEach((node, index) => {
-        if (!positions.has(node.id)) {
-          positions.set(node.id, { x: 150 + (index % 4) * 150, y: 200 + Math.floor(index / 4) * 110 });
-        }
-      });
-      return positions;
     }
 
     async function request(path, options) {
@@ -593,8 +638,9 @@
       document.getElementById("approve").disabled = !projectId;
       if (!projectId) {
         cy.elements().remove();
-        lastNodeIds = null;
+        positionCache = new Map();
         selectedNodeId = null;
+        stopReplay();
         knownEventIds = new Set();
         eventProjectId = null;
         previewProjectId = null;
@@ -605,6 +651,7 @@
         banner.className = "";
         document.getElementById("events").replaceChildren();
         document.getElementById("latest-event").textContent = "Waiting for project events.";
+        document.getElementById("project-name").textContent = "No project selected";
         document.getElementById("progress-label").textContent = "0 / 0 done";
         document.getElementById("progress-fill").style.width = "0%";
         document.getElementById("artifact-list").replaceChildren();
@@ -627,9 +674,34 @@
           : Promise.resolve(null),
         request(`/projects/${encodeURIComponent(projectId)}/artifacts`)
       ]);
-      const nodes = graph.nodes.map(node => {
-        const label = nodeDisplayLabel(node);
-        return { ...node, title: String(label).slice(0, 16) };
+      if (eventProjectId !== projectId) {
+        stopReplay();
+        eventProjectId = projectId;
+        positionCache = new Map();
+        cy.elements().remove();
+        knownEventIds = activeRunId === projectId
+          ? new Set()
+          : new Set(events.map(event => event.id).filter(Boolean));
+      }
+      const projectNode = graph.nodes.find(node => node.label === "Project");
+      document.getElementById("project-name").textContent =
+        projectNode && projectNode.properties && projectNode.properties.name
+          ? projectNode.properties.name
+          : projectId;
+      document.getElementById("project-name").title =
+        projectNode && projectNode.properties && projectNode.properties.name
+          ? projectNode.properties.name
+          : projectId;
+      const laneGraph = window.CrewGraphLayout.buildLaneGraph(
+        graph.nodes, graph.edges, positionCache
+      );
+      const nodes = laneGraph.nodes.map(node => {
+        const fullTitle = String(node.title || nodeDisplayLabel(node));
+        return {
+          ...node,
+          fullTitle,
+          title: fullTitle.length > 16 ? `${fullTitle.slice(0, 15)}…` : fullTitle
+        };
       });
       const tasksById = new Map(
         graph.nodes.filter(node => node.label === "Task").map(node => [node.id, node])
@@ -642,81 +714,71 @@
         `${tasks.length ? completedTasks / tasks.length * 100 : 0}%`;
       document.getElementById("progress-track").setAttribute("aria-valuenow", completedTasks);
       document.getElementById("progress-track").setAttribute("aria-valuemax", tasks.length);
-      const edges = graph.edges.map(edge => ({
-        data: {
-          id: `${edge.source}:${edge.type}:${edge.target}`,
-          source: edge.source, target: edge.target, type: edge.type
+      const edgeElements = laneGraph.edges;
+      const nodeIds = new Set(nodes.map(node => node.id));
+      cy.nodes().filter(node => !nodeIds.has(node.id()) && !node.hasClass("particle")).remove();
+      const knownNodeIds = new Set(cy.nodes().map(node => node.id()));
+      const addedNodes = nodes.filter(node => !knownNodeIds.has(node.id));
+      for (const node of nodes) {
+        if (knownNodeIds.has(node.id)) {
+          const { position, ...data } = node;
+          cy.$id(node.id).data(data);
         }
-      }));
-      if (eventProjectId !== projectId) {
-        eventProjectId = projectId;
-        knownEventIds = new Set();
       }
-      const nodeIds = nodes.map(node => node.id).sort();
-      const nodeIdsKey = JSON.stringify(nodeIds);
-      if (nodeIdsKey !== lastNodeIds) {
-        cy.elements().remove();
-        const positions = calculateGraphPositions(nodes, graph.edges);
-        cy.add([
-          ...nodes.map(node => ({
-            data: node,
-            position: positions.get(node.id),
-            classes: reducedMotion ? "" : "entering"
-          })),
-          ...edges.map(edge => ({
-            ...edge,
-            classes: reducedMotion ? "" : "drawing"
-          }))
-        ]);
-        const layout = cy.layout({
-          name: "preset", fit: false, padding: 28
-        });
-        layout.one("layoutstop", () => {
-          cy.fit(cy.elements(), 28);
-          if (!reducedMotion) {
+      cy.add(addedNodes.map(node => {
+        const { position, ...data } = node;
+        return {
+          data,
+          position,
+          classes: reducedMotion ? "" : "entering"
+        };
+      }));
+      const edgeIds = new Set(edgeElements.map(edge => edge.data.id));
+      cy.edges().filter(edge => !edgeIds.has(edge.id())).remove();
+      const knownEdgeIds = new Set(cy.edges().map(edge => edge.id()));
+      const addedEdges = edgeElements.filter(edge => !knownEdgeIds.has(edge.data.id));
+      cy.add(addedEdges.map(edge => ({
+        ...edge,
+        classes: reducedMotion ? "" : "drawing"
+      })));
+      revealEdges(addedEdges.map(edge => edge.data.id));
+      if (addedNodes.length) {
+        const preset = cy.layout({ name: "preset", fit: false });
+        preset.one("layoutstop", () => {
+          if (reducedMotion) {
+            cy.fit(cy.elements(), 40);
+          } else {
             cy.nodes(".entering").forEach(node => {
               node.animate({ style: { opacity: 1, width: 40, height: 40 } }, {
-                duration: 280,
+                duration: TIMINGS.nodeAppearMs / playbackMultiplier(),
                 complete: () => node.removeClass("entering")
               });
             });
+            cy.animate(
+              { fit: { eles: cy.elements(), padding: 40 } },
+              { duration: TIMINGS.cameraMs / playbackMultiplier() }
+            );
           }
-          revealEdges(edges.map(edge => edge.data.id));
-          syncWorkingNodes();
         });
-        layout.run();
-        lastNodeIds = nodeIdsKey;
-        selectedNodeId = null;
-      } else {
-        for (const nodeData of nodes) {
-          cy.$id(nodeData.id).data(nodeData);
-        }
-        const newEdgeIds = new Set(edges.map(edge => edge.data.id));
-        cy.edges().filter(edge => !newEdgeIds.has(edge.id())).remove();
-        const existingEdgeIds = new Set(cy.edges().map(edge => edge.id()));
-        const addedEdges = edges.filter(edge => !existingEdgeIds.has(edge.data.id));
-        cy.add(addedEdges.map(edge => ({
-          ...edge,
-          classes: reducedMotion ? "" : "drawing"
-        })));
-        revealEdges(addedEdges.map(edge => edge.data.id));
-        syncWorkingNodes();
+        preset.run();
       }
+      syncWorkingNodes();
       showNodeEdges(hoveredNodeId || selectedNodeId);
       for (const item of events) {
         if (item.id && !knownEventIds.has(item.id)) {
           knownEventIds.add(item.id);
-          if (item.type === "bug found") animateFoundBug(item.bug_id);
-          animateStageTravel(stageForEvent(item, tasksById));
+          enqueueVisualEvent(item, tasksById);
         }
         if (!replayActive) {
           document.getElementById("replay-events").disabled = events.length === 0;
         }
       }
       const latestEvent = events[events.length - 1];
-      document.getElementById("latest-event").textContent = latestEvent
-        ? describeEvent(latestEvent, tasksById)
-        : "Waiting for project events.";
+      if (!visualEventQueue.length && !replayActive) {
+        document.getElementById("latest-event").textContent = latestEvent
+          ? describeEvent(latestEvent, tasksById)
+          : "Waiting for project events.";
+      }
       updateStages(graph.nodes, events, release);
       renderOutput(projectId, artifacts, release, run);
 
@@ -794,6 +856,15 @@
     picker.addEventListener("change", () => {
       stopReplay();
       refreshProject().catch(reportRefreshFailure);
+    });
+    speedControl.addEventListener("change", () => {
+      document.querySelectorAll(".stage-step").forEach(step => {
+        step.style.setProperty(
+          "--pulse-period",
+          `${TIMINGS.pulsePeriodMs / playbackMultiplier()}ms`
+        );
+      });
+      syncWorkingNodes();
     });
     document.getElementById("replay-events").addEventListener("click", async () => {
       if (!picker.value) return;
