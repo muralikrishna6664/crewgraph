@@ -5,54 +5,62 @@ from fastapi.testclient import TestClient
 import app.main as main
 
 
-def test_dashboard_root_serves_single_page() -> None:
-    response = TestClient(main.app).get("/")
+def test_dashboard_serves_external_dark_styles_and_script() -> None:
+    client = TestClient(main.app)
+    response = client.get("/")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "cytoscape@3.30.4" in response.text
-    assert 'banner.textContent = "No projects yet. Click Run demo."' in response.text
-    assert 'case "Approval": return `Approval (${properties.status || "pending"})`;' in response.text
-    assert 'case "Project": return properties.name || "Project";' in response.text
-    assert 'case "Lesson": return properties.title || properties.content || "Lesson";' in response.text
-    assert 'case "Review":' in response.text
-    assert 'approved: "#3e9b68"' in response.text
-    assert 'pending: "#e4bc3f"' in response.text
-    assert 'new Date(timestamp).toLocaleTimeString()' in response.text
-    assert 'content.title = String(value);' in response.text
+    assert '<link rel="stylesheet" href="/static/style.css">' in response.text
+    assert '<script src="/static/app.js" defer></script>' in response.text
+    script = client.get("/static/app.js").text
+    styles = client.get("/static/style.css").text
+    assert "<script>" not in response.text
+    assert 'banner.textContent = "No projects yet. Click Run demo."' in script
+    assert 'case "Approval": return `Approval (${properties.status || "pending"})`;' in script
+    assert 'case "Project": return properties.name || "Project";' in script
+    assert 'case "Lesson": return properties.title || properties.content || "Lesson";' in script
+    assert 'case "Review":' in script
+    assert 'done: "#55e69a", ready: "#f5bd4f", claimed: "#5b9dff"' in script
+    assert 'new Date(timestamp).toLocaleTimeString()' in script
+    assert 'content.title = String(value);' in script
     assert "Run demo with flaw" in response.text
-    assert 'name: "breadthfirst", directed: true' in response.text
-    assert 'direction: "TB"' in response.text
-    assert 'width: 40, height: 40' in response.text
-    assert '"text-wrap": "wrap", "text-max-width": 120, "font-size": 12' in response.text
-    assert 'label: "data(title)"' in response.text
-    assert 'case "Task": return properties.title || "Task";' in response.text
-    assert 'case "Artifact": return properties.path || "Artifact";' in response.text
-    assert 'case "Agent": return properties.name || "Agent";' in response.text
-    assert 'case "Bug": return properties.title || "Bug";' in response.text
-    assert "String(label).slice(0, 24)" in response.text
-    assert 'label: ""' in response.text
-    assert 'selector: "edge.edge-visible"' in response.text
-    assert "nodeIdsKey !== lastNodeIds" in response.text
-    assert 'cy.fit(cy.elements(), 28)' in response.text
+    assert 'name: "breadthfirst", directed: true' in script
+    assert 'direction: "TB"' in script
+    assert 'width: 40, height: 40' in script
+    assert '"text-wrap": "wrap", "text-max-width": 120, "font-size": 12' in script
+    assert 'label: "data(title)"' in script
+    assert 'case "Task": return properties.title || "Task";' in script
+    assert 'case "Artifact": return properties.path || "Artifact";' in script
+    assert 'case "Agent": return properties.name || "Agent";' in script
+    assert 'case "Bug": return properties.title || "Bug";' in script
+    assert "String(label).slice(0, 24)" in script
+    assert 'label: ""' in script
+    assert 'selector: "edge.edge-visible"' in script
+    assert "nodeIdsKey !== lastNodeIds" in script
+    assert 'cy.fit(cy.elements(), 28)' in script
     assert 'id="legend"' in response.text
-    assert 'release.reasons[0] === "Human approval is required"' in response.text
-    assert 'banner.textContent = "Human approval is required"' in response.text
-    assert 'banner.textContent = "Released."' in response.text
-    assert 'banner.textContent = "Running..."' in response.text
-    assert "Run failed: ${run.message}" in response.text
-    assert '#release-banner.starting' in response.text
-    assert 'banner.textContent = "Starting..."' in response.text
-    assert "Date.now() - activeRunStartedAt < 5000" in response.text
-    assert "consecutiveRefreshFailures >= 3" in response.text
-    assert "consecutiveRefreshFailures = 0" in response.text
-    assert "const projectRefreshVersion = ++projectsRefreshVersion" in response.text
-    assert "if (projectRefreshVersion !== projectsRefreshVersion)" in response.text
-    assert "preferred || picker.value || activeRunId" in response.text
-    assert "projectNames.push(activeRunId)" in response.text
-    assert "await refreshProjects(started.project_id)" in response.text
-    assert "picker.value = started.project_id" in response.text
-    assert "const previous = activeRunId || picker.value" in response.text
+    assert 'release.reasons[0] === "Human approval is required"' in script
+    assert 'banner.textContent = "Human approval is required"' in script
+    assert 'banner.textContent = "Released."' in script
+    assert 'banner.textContent = "Running..."' in script
+    assert "Run failed: ${run.message}" in script
+    assert "banner.textContent = \"Starting...\"" in script
+    assert "Date.now() - activeRunStartedAt < 5000" in script
+    assert "consecutiveRefreshFailures >= 3" in script
+    assert "consecutiveRefreshFailures = 0" in script
+    assert "const projectRefreshVersion = ++projectsRefreshVersion" in script
+    assert "if (projectRefreshVersion !== projectsRefreshVersion)" in script
+    assert "preferred || picker.value || activeRunId" in script
+    assert "projectNames.push(activeRunId)" in script
+    assert "await refreshProjects(started.project_id)" in script
+    assert "picker.value = started.project_id" in script
+    assert "const previous = activeRunId || picker.value" in script
+    assert "color-scheme: dark" in styles
+    assert "@media (prefers-reduced-motion: reduce)" in styles
+    assert "function pulseWorkingNode(node)" in script
+    assert "function animateFoundBug(bugId)" in script
 
 
 def test_demo_endpoint_starts_a_background_run(monkeypatch) -> None:

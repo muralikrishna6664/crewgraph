@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from falkordb.graph import Graph
 from falkordb.node import Node
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from app.orchestrator import run_project
 from app.schema import init_project
 
 app = FastAPI(title="CrewGraph")
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 _demo_lock = Lock()
 _demo_runs_lock = Lock()
 _demo_runs: dict[str, dict[str, str]] = {}
