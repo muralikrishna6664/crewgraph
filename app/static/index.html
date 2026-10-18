@@ -63,29 +63,34 @@
         <span id="progress-label">0 / 0 done</span>
       </div>
     </section>
-    <aside>
-      <div class="panel">
+    <aside class="output-panel">
+      <div class="panel" id="output-panel">
         <div class="panel-heading">
           <h2>Output</h2>
           <span id="output-status">No run selected</span>
         </div>
-        <div id="artifact-list" aria-label="Generated files"></div>
+        <div id="artifact-list" role="tablist" aria-label="Generated files"></div>
         <div class="preview-heading">
           <span id="preview-path">No file selected</span>
           <span>read only</span>
         </div>
         <pre id="artifact-preview">Generated files will appear here as agents record artifacts.</pre>
       </div>
-      <div class="panel">
-        <h2>Recent events</h2>
-        <ol id="events"></ol>
-      </div>
-      <div class="panel selected-panel">
-        <h2>Selected node</h2>
-        <dl id="details"><dt>Node</dt><dd>Click a graph node to inspect it.</dd></dl>
-      </div>
     </aside>
   </main>
+  <details id="activity-drawer">
+    <summary>Recent events and selected node</summary>
+    <div class="activity-drawer-content">
+      <section class="drawer-panel">
+        <h2>Recent events</h2>
+        <ol id="events"></ol>
+      </section>
+      <section class="drawer-panel selected-panel">
+        <h2>Selected node</h2>
+        <dl id="details"><dt>Node</dt><dd>Click a graph node to inspect it.</dd></dl>
+      </section>
+    </div>
+  </details>
   <div id="message" role="status"></div>
   <script src="/static/graph-layout.js" defer></script>
   <script src="/static/app.js" defer></script>

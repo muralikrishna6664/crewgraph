@@ -31,6 +31,8 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert 'data-graph-view="simple"' in response.text
     assert 'id="simple-view" type="button" aria-pressed="true">Simple view</button>' in response.text
     assert 'id="detailed-view" type="button" aria-pressed="false">Detailed view</button>' in response.text
+    assert '<div id="artifact-list" role="tablist" aria-label="Generated files"></div>' in response.text
+    assert '<details id="activity-drawer">' in response.text
     assert 'name: "preset"' in script
     assert "window.CrewGraphLayout.buildLaneGraph(" in script
     assert "window.CrewGraphLayout.buildSimpleGraph(" in script
@@ -51,8 +53,14 @@ def test_dashboard_serves_external_light_styles_and_script() -> None:
     assert 'width: element => element.data("label") === "Simple" ? 56 : 40' in script
     assert '"text-wrap": "wrap", "text-max-width": 120, "font-size": 12' in script
     assert 'label: element => graphView === "simple" ? "" : element.data("title")' in script
+    assert 'event.type === "artifact created"' in script
+    assert "text.appendData(file.content.slice(index, nextIndex))" in script
+    assert "50 / playbackMultiplier()" in script
+    assert "Waiting approval" in script
     assert 'case "Task": return properties.title || "Task";' in script
     assert "grid-template-columns: minmax(0, 1fr)" in styles
+    assert "grid-template-columns: minmax(0, 58fr) minmax(0, 42fr)" in styles
+    assert 'font: 14px/1.7 "Cascadia Code", Consolas, monospace;' in styles
     assert "section, aside {" in styles
     assert "min-width: 0;" in styles
     assert "#graph { position: absolute; inset: 0; width: 100%; height: 100%;" in styles

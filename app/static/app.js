@@ -36,6 +36,9 @@
     let selectedArtifactId = null;
     let manualPreviewSelection = false;
     let previewProjectId = null;
+    let lastAutoArtifactEventId = null;
+    let previewRequestVersion = 0;
+    let typewriterTimer = null;
     let replayActive = false;
     let visualEventQueue = [];
     let visualEventTimer = null;
@@ -128,8 +131,25 @@
       return null;
     }
 
-    async function showArtifactPreview(projectId, artifact) {
+    function stopTypewriter() {
+      if (typewriterTimer !== null) window.clearTimeout(typewriterTimer);
+      typewriterTimer = null;
+    }
+
+    function updateArtifactTabs() {
+      document.querySelectorAll(".artifact-entry").forEach(button => {
+        button.setAttribute(
+          "aria-selected",
+          String(button.dataset.artifactId === selectedArtifactId)
+        );
+      });
+    }
+
+    async function showArtifactPreview(projectId, artifact, animate = false) {
+      const requestVersion = ++previewRequestVersion;
+      stopTypewriter();
       selectedArtifactId = artifact.id;
+      updateArtifactTabs();
       const preview = document.getElementById("artifact-preview");
       document.getElementById("preview-path").textContent = artifact.path;
       preview.textContent = "Loading preview…";
@@ -137,26 +157,54 @@
         const file = await request(
           `/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`
         );
-        preview.textContent = file.content;
+        if (requestVersion !== previewRequestVersion) return;
+        if (!animate || reducedMotion) {
+          preview.textContent = file.content;
+          return;
+        }
+        preview.replaceChildren();
+        const text = document.createTextNode("");
+        preview.append(text);
+        let index = 0;
+        const typeNextChunk = () => {
+          const nextIndex = Math.min(index + 3, file.content.length);
+          text.appendData(file.content.slice(index, nextIndex));
+          index = nextIndex;
+          if (index < file.content.length) {
+            typewriterTimer = window.setTimeout(
+              typeNextChunk,
+              50 / playbackMultiplier()
+            );
+          } else {
+            typewriterTimer = null;
+          }
+        };
+        typeNextChunk();
       } catch (error) {
+        if (requestVersion !== previewRequestVersion) return;
         preview.textContent = `Preview unavailable: ${error.message}`;
       }
     }
 
-    function renderOutput(projectId, artifacts, release, run) {
+    function renderOutput(projectId, artifacts, release, run, events) {
       const list = document.getElementById("artifact-list");
       list.replaceChildren();
       const status = document.getElementById("output-status");
-      status.textContent = release.released
+      const statusText = release.released
         ? "Released"
-        : release.can_release ? "Awaiting approval"
+        : release.can_release ? "Waiting approval"
         : run && run.status === "failed" ? "Run failed"
-          : run && run.status === "finished" ? "Awaiting approval" : "Building";
+          : run && run.status === "finished" ? "Waiting approval" : "Building";
+      status.textContent = statusText;
+      status.dataset.status = statusText.toLowerCase().replaceAll(" ", "-");
       for (const artifact of artifacts) {
         const button = document.createElement("button");
         button.className = "artifact-entry";
         const agents = Array.isArray(artifact.agents) ? artifact.agents.join(", ") : "";
-        button.textContent = `${artifact.path} · v${artifact.version}${agents ? ` · ${agents}` : ""}`;
+        button.dataset.artifactId = artifact.id;
+        button.setAttribute("role", "tab");
+        button.textContent = `${artifact.path} · v${artifact.version}`;
+        button.title = `${artifact.path} · v${artifact.version}${agents ? ` · ${agents}` : ""}`;
         button.addEventListener("click", () => {
           manualPreviewSelection = true;
           showArtifactPreview(projectId, artifact);
@@ -164,19 +212,35 @@
         list.append(button);
       }
       const selectedStillExists = artifacts.some(item => item.id === selectedArtifactId);
-      if (!selectedStillExists) selectedArtifactId = null;
-      const completed = release.released || (run && run.status === "finished");
-      if (!manualPreviewSelection && completed) {
-        const preferred = ["main.py", "dashboard/index.html"].map(path =>
-          artifacts.filter(item => item.path === path)
-            .sort((left, right) => right.version - left.version)[0]
-        ).find(Boolean);
-        if (preferred && preferred.id !== selectedArtifactId) {
-          showArtifactPreview(projectId, preferred);
-        } else if (!preferred && !selectedArtifactId && artifacts.length) {
-          showArtifactPreview(projectId, artifacts[artifacts.length - 1]);
-        }
+      if (!selectedStillExists) {
+        selectedArtifactId = null;
+        manualPreviewSelection = false;
+        stopTypewriter();
+        previewRequestVersion += 1;
       }
+      updateArtifactTabs();
+
+      const latestArtifactEvent = [...events].reverse().find(event =>
+        event.type === "artifact created"
+        && artifacts.some(artifact => artifact.id === event.artifact_id)
+      );
+      if (latestArtifactEvent) {
+        const eventId = latestArtifactEvent.id
+          || `${latestArtifactEvent.artifact_id}:${latestArtifactEvent.ts}`;
+        if (eventId !== lastAutoArtifactEventId) {
+          lastAutoArtifactEventId = eventId;
+          manualPreviewSelection = false;
+          const artifact = artifacts.find(item => item.id === latestArtifactEvent.artifact_id);
+          if (artifact) showArtifactPreview(projectId, artifact, true);
+        }
+      } else if (!selectedArtifactId && artifacts.length) {
+        const ordered = [...artifacts].sort(
+          (left, right) => Number(left.ts || 0) - Number(right.ts || 0)
+        );
+        const newest = ordered[ordered.length - 1];
+        if (newest) showArtifactPreview(projectId, newest, true);
+      }
+
       if (!selectedArtifactId) {
         document.getElementById("preview-path").textContent = "No file selected";
         document.getElementById("artifact-preview").textContent =
@@ -762,6 +826,8 @@
       if (!projectId) {
         cy.elements().remove();
         positionCache = new Map();
+        stopTypewriter();
+        previewRequestVersion += 1;
         selectedNodeId = null;
         stopReplay();
         knownEventIds = new Set();
@@ -769,6 +835,7 @@
         previewProjectId = null;
         selectedArtifactId = null;
         manualPreviewSelection = false;
+        lastAutoArtifactEventId = null;
         showEmptyDetails();
         banner.textContent = "No projects yet. Click Run demo.";
         banner.className = "";
@@ -799,6 +866,9 @@
       ]);
       if (eventProjectId !== projectId) {
         stopReplay();
+        stopTypewriter();
+        previewRequestVersion += 1;
+        lastAutoArtifactEventId = null;
         eventProjectId = projectId;
         positionCache = new Map();
         cy.elements().remove();
@@ -928,7 +998,7 @@
           : "Waiting for project events.";
       }
       updateStages(graph.nodes, events, release);
-      renderOutput(projectId, artifacts, release, run);
+      renderOutput(projectId, artifacts, release, run, events);
 
       banner.className = release.released
         ? "allowed"
