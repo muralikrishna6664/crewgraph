@@ -197,11 +197,15 @@ The function's Python checks require the project to exist, every task to be `don
 | Procedural memory | Skill-tagged tasks are scheduled to agents by a fixed skill-to-agent mapping. | This is a small hard-coded worker set, not a general procedure/tool registry. |
 | Shared state and handoffs | Tasks, dependencies, artifacts, bugs, and handoff context are persisted in each project's graph. | Agents do not communicate outside the graph; no distributed message broker is used. |
 | High concurrency | A 20-thread barrier test proves one winner for one task. A 50-worker contention benchmark is recorded below. | Benchmark query actions are capped at eight in flight because an uncapped attempt exceeded FalkorDB's pending-query limit. |
-| Tenant isolation | Each project ID selects a distinct FalkorDB graph. | Authentication and authorization are not implemented; graph selection alone is not a production security boundary. |
+| Tenant isolation | Each tenant's project IDs are prefixed with its slug and select distinct FalkorDB graphs. | Demo authentication is not production security; see the warning below. |
 
 ## LLM mode and synthetic agents
 
 The default is `LLM_PROVIDER=mock`, so the demo runs without a key or model network request. The mock planner returns a canned DAG; mock workers and debugger return canned file contents. The following parts are real application behavior: graph scheduling and atomic claims, graph-backed handoffs, real HTTP checks against the generated app on localhost, static security scanning, bug/fix links, lease recovery, human approval, and the release gate.
+
+The dashboard shows the active provider as **Mock LLM mode** or **Live LLM**. Its prompt is sent to the planner; mock mode intentionally keeps the canned DAG, while a configured live provider can produce a prompt-specific plan. The graph, recent-event caption, stage transitions, progress bar, node/edge animations, and 4× Replay all use persisted FalkorDB state and `/events` results. Replay does not synthesize events.
+
+The graph view adds a violet **Prompt** frame from the prompt stored on the `Project` node and an **Output** frame reflecting actual release status. The output panel lists graph-recorded artifact versions and producing agents. Its read-only preview reads the selected registered file from that project's workspace; paths are confined to the project workspace and previews are limited to 256 KiB.
 
 An OpenAI Chat Completions provider is wired in [agents/llm.py](./agents/llm.py), but live model output is not covered by the tests or a live API run here. To use it, supply your own model and key in the current shell; never put a real key in source control.
 
@@ -250,11 +254,32 @@ docker compose up -d --build
 
 The API waits for a healthy FalkorDB service, uses `FALKORDB_HOST=falkordb`, and has its own `/health` check. Open the dashboard at [http://localhost:8000](http://localhost:8000); FalkorDB Browser is at [http://localhost:3000](http://localhost:3000). Stop the stack without deleting its named database volume:
 
+Compose enables demo login by default. Sign in using either synthetic tenant account:
+
+| Tenant | Username | Demo password |
+|---|---|---|
+| Acme | `acme` | `acme-demo-2026!` |
+| Globex | `globex` | `globex-demo-2026!` |
+
+The API stores only PBKDF2 password hashes. The session token is HMAC-signed; Compose's default signing key is `crewgraph-demo-only-change-this-secret` and is **for local demo use only**. Set a private `SECRET_KEY` before sharing a demo. Tests explicitly default `AUTH_ENABLED=false`; Compose defaults it to `true`. To run the stack without login for the local flow checker, set `$env:AUTH_ENABLED = "false"` before `docker compose up -d --build`.
+
+**This is demo authentication, not production security.** The published passwords and default signing key are intentionally synthetic and public. There is no password recovery, rate limiting, account provisioning, TLS enforcement, or production session management. Do not expose this demo service to an untrusted network.
+
+For the authenticated flow checker, set its local demo credentials in the shell:
+
+```powershell
+$env:CREWGRAPH_USERNAME = "acme"
+$env:CREWGRAPH_PASSWORD = "acme-demo-2026!"
+python -m scripts.check_dashboard_flow
+```
+
+Without those variables, the flow checker works when `AUTH_ENABLED=false`.
+
 ```powershell
 docker compose down
 ```
 
-The database files live under `/data` in the container, backed by the explicitly named Docker volume **`crewgraph_falkordb_data`**. The volume survives container recreation and `docker compose down`. **Do not run `docker compose down -v` unless you intend to permanently delete all persisted FalkorDB graph data**; `-v` removes this named volume.
+The database files live under `/data` in the container, backed by the explicitly named Docker volume **`crewgraph_falkordb_data`**. Generated project workspaces are backed by **`crewgraph_workspace_data`**, so registered artifact previews survive container recreation and `docker compose down` too. **Do not run `docker compose down -v` unless you intend to permanently delete the persisted database and workspace data**; `-v` removes both named volumes.
 
 To verify the repair flow and persistence on a running local stack, run `python -m scripts.check_persistence`. It creates a synthetic flawed demo, restarts only the `falkordb` service, checks the project graph, and leaves that project in the database.
 
@@ -272,7 +297,7 @@ python -m scripts.run_demo
 uvicorn app.main:app --reload
 ```
 
-Open [http://localhost:8000](http://localhost:8000). To seed two synthetic tenant graphs for inspection, run `python -m scripts.seed`.
+Open [http://localhost:8000](http://localhost:8000). Local Python runs leave auth off unless `AUTH_ENABLED=true` is set. To seed two synthetic tenant graphs for inspection, run `python -m scripts.seed`.
 
 ### Demo commands
 
@@ -306,7 +331,7 @@ All demo app HTTP requests target localhost. The security flaw key is fake; neit
 
 ## Tests and measured results
 
-The current suite has **31 passing tests** and uses real local FalkorDB for graph integration tests; temporary test graphs are deleted. Mock/unit tests do not call a live model provider.
+The current suite has **36 passing tests** and uses real local FalkorDB for graph integration tests; temporary test graphs are deleted. `tests/conftest.py` disables auth by default, with explicit auth tests opting in. Mock/unit tests do not call a live model provider.
 
 ```powershell
 python -m pytest -q
@@ -316,11 +341,13 @@ The 20-project mock load run completed 80 tasks in 11.04 seconds (7.25 tasks/sec
 
 ## Limitations and future work
 
-- This is a local hackathon prototype; there is no user authentication or authorization.
+- This is a local hackathon prototype. Authentication is demo-only and must not be treated as a production security boundary.
 - The mock plan and generated app files are canned. A live LLM provider is wired but not validated against external output in this project run.
 - The app under test is a small in-memory to-do API and is not durable.
 - The security scanner checks a narrow set of patterns; it is not a comprehensive audit.
 - `Skill`, `Episode`, and `Review` are declared labels but are not populated by the current demo flow. Some relationship constants are also model-only and unused; see the graph model notes.
 - Dashboard run status is process-local, and there is no distributed worker service or persistent job registry.
 - The dashboard loads pinned Cytoscape.js from a CDN and needs access to that CDN in the browser.
-- Future work: persist richer agent episodes and lessons, add authentication and authorization, broaden security checks, validate more model providers, and benchmark unthrottled concurrency against a suitably configured FalkorDB deployment.
+- Future work: persist richer agent episodes and lessons, broaden security checks, validate more model providers, and benchmark unthrottled concurrency against a suitably configured FalkorDB deployment.
+
+Dashboard captures: [login](./docs/img/login.png), [mid-run pulse](./docs/img/mid-run.png), and [finished output](./docs/img/finished-output.png).

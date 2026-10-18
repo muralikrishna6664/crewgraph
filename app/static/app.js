@@ -175,10 +175,10 @@
       if (!targetId) return;
       const node = cy.$id(targetId);
       if (!node.length) return;
-      node.animate({ style: { "shadow-blur": 29, "shadow-opacity": 1 } }, {
+      node.animate({ style: { "underlay-padding": 16, "underlay-opacity": 0.95 } }, {
         duration: 180,
         complete: () => node.animate({
-          style: { "shadow-blur": 15, "shadow-opacity": 0.62 }
+          style: { "underlay-padding": 9, "underlay-opacity": 0.34 }
         }, { duration: 100 })
       });
     }
@@ -222,10 +222,7 @@
     const cy = cytoscape({
       container: document.getElementById("graph"),
       elements: [],
-      layout: {
-        name: "breadthfirst", directed: true, direction: "TB",
-        padding: 28, spacingFactor: 1.1
-      },
+      layout: { name: "preset", padding: 28 },
       style: [
         {
           selector: "node",
@@ -250,7 +247,7 @@
             "font-family": "Cascadia Code, Consolas, monospace",
             "text-margin-y": 7,
             width: 40, height: 40, "border-width": 1, "border-color": "#c7d4e6",
-            "shadow-color": element => {
+            "underlay-color": element => {
               const data = element.data();
               if (data.label === "Bug") return data.status === "fixed" ? "#55e69a" : "#ff527f";
               if (data.label === "Task") {
@@ -258,8 +255,8 @@
               }
               return colors[data.label] || "#b98aff";
             },
-            "shadow-blur": 15, "shadow-opacity": 0.62, "shadow-offset-x": 0, "shadow-offset-y": 0,
-            "transition-property": "opacity, width, height, shadow-blur",
+            "underlay-padding": 9, "underlay-opacity": 0.34,
+            "transition-property": "opacity, width, height, underlay-padding",
             "transition-duration": "220ms"
           }
         },
@@ -269,11 +266,11 @@
         },
         {
           selector: "node.working",
-          style: { "border-width": 3, "border-color": "#9bc3ff", "shadow-blur": 22, "shadow-opacity": 0.9 }
+          style: { "border-width": 3, "border-color": "#9bc3ff", "underlay-padding": 14, "underlay-opacity": 0.85 }
         },
         {
           selector: "node.shaking",
-          style: { "border-color": "#fff0a8", "shadow-color": "#ff527f", "shadow-blur": 25, "shadow-opacity": 1 }
+          style: { "border-color": "#fff0a8", "underlay-color": "#ff527f", "underlay-padding": 16, "underlay-opacity": 1 }
         },
         {
           selector: "edge",
@@ -302,6 +299,11 @@
           style: { label: "data(type)" }
         }
       ]
+    });
+
+    window.addEventListener("resize", () => {
+      cy.resize();
+      if (cy.elements().length) cy.fit(cy.elements(), 28);
     });
 
     cy.on("tap", "node", event => {
@@ -357,7 +359,7 @@
         case "Agent": return properties.name || "Agent";
         case "Bug": return properties.title || "Bug";
         case "Project": return properties.name || "Project";
-        case "Prompt": return properties.prompt || "Prompt";
+        case "Prompt": return "Prompt";
         case "Output": return "Output";
         case "Approval": return `Approval (${properties.status || "pending"})`;
         case "Lesson": return properties.title || properties.content || "Lesson";
@@ -385,11 +387,11 @@
 
     function pulseWorkingNode(node) {
       if (reducedMotion || !node.hasClass("working")) return;
-      node.animate({ style: { "shadow-blur": 25 } }, {
+      node.animate({ style: { "underlay-padding": 16 } }, {
         duration: 650,
         complete: () => {
           if (!node.hasClass("working")) return;
-          node.animate({ style: { "shadow-blur": 12 } }, {
+          node.animate({ style: { "underlay-padding": 7 } }, {
             duration: 650,
             complete: () => pulseWorkingNode(node)
           });
@@ -445,6 +447,103 @@
       if (event.type === "bug fixed") return `Bug fixed: ${event.bug_id}`;
       if (event.type === "artifact created") return event.detail || "Artifact created";
       return `${event.type}${event.detail ? `: ${event.detail}` : ""}`;
+    }
+
+    function calculateGraphPositions(nodes, edges) {
+      const tasks = nodes.filter(node => node.label === "Task");
+      const dependencies = new Map(tasks.map(task => [task.id, []]));
+      for (const edge of edges.filter(item => item.type === "DEPENDS_ON")) {
+        if (dependencies.has(edge.source)) dependencies.get(edge.source).push(edge.target);
+      }
+      const levels = new Map();
+      function levelOf(taskId, visiting = new Set()) {
+        if (levels.has(taskId)) return levels.get(taskId);
+        if (visiting.has(taskId)) return 0;
+        const next = new Set(visiting);
+        next.add(taskId);
+        const dependsOn = dependencies.get(taskId) || [];
+        const level = dependsOn.length
+          ? 1 + Math.max(...dependsOn.map(id => levelOf(id, next)))
+          : 0;
+        levels.set(taskId, level);
+        return level;
+      }
+      tasks.forEach(task => levelOf(task.id));
+      const columns = new Map();
+      for (const task of tasks) {
+        const level = levels.get(task.id) || 0;
+        if (!columns.has(level)) columns.set(level, []);
+        columns.get(level).push(task);
+      }
+
+      const positions = new Map();
+      const prompt = nodes.find(node => node.label === "Prompt");
+      const output = nodes.find(node => node.label === "Output");
+      const maxLevel = Math.max(0, ...levels.values());
+      const outputX = (maxLevel + 2) * 230;
+      if (prompt) positions.set(prompt.id, { x: 40, y: 0 });
+      if (output) positions.set(output.id, { x: outputX, y: 0 });
+
+      for (const [level, items] of columns) {
+        items.sort((left, right) => left.id.localeCompare(right.id));
+        items.forEach((task, index) => {
+          positions.set(task.id, {
+            x: 190 + level * 230,
+            y: (index - (items.length - 1) / 2) * 125
+          });
+        });
+      }
+      const project = nodes.find(node => node.label === "Project");
+      if (project) positions.set(project.id, { x: 40, y: -145 });
+
+      const taskForArtifact = new Map();
+      const artifactEdges = edges.filter(edge => edge.type === "FOR_TASK");
+      const artifactCounts = new Map();
+      for (const edge of artifactEdges) {
+        const taskPosition = positions.get(edge.target);
+        if (!taskPosition) continue;
+        taskForArtifact.set(edge.source, edge.target);
+        const index = artifactCounts.get(edge.target) || 0;
+        artifactCounts.set(edge.target, index + 1);
+        positions.set(edge.source, {
+          x: taskPosition.x + 70,
+          y: taskPosition.y + 68 + index * 78
+        });
+      }
+
+      const agents = new Map();
+      for (const edge of edges.filter(item => item.type === "PRODUCED_BY")) {
+        const taskId = taskForArtifact.get(edge.source);
+        const taskPosition = taskId ? positions.get(taskId) : null;
+        if (!taskPosition) continue;
+        if (!agents.has(edge.target)) agents.set(edge.target, []);
+        agents.get(edge.target).push(taskPosition);
+      }
+      for (const [agentId, taskPositions] of agents) {
+        positions.set(agentId, {
+          x: taskPositions[0].x,
+          y: taskPositions.reduce((sum, point) => sum + point.y, 0) / taskPositions.length - 72
+        });
+      }
+
+      for (const edge of edges.filter(item => item.type === "FOUND_IN")) {
+        const artifactPosition = positions.get(edge.target);
+        if (artifactPosition) {
+          positions.set(edge.source, {
+            x: artifactPosition.x + 52,
+            y: artifactPosition.y + 78
+          });
+        }
+      }
+      const approval = nodes.find(node => node.label === "Approval");
+      if (approval) positions.set(approval.id, { x: outputX - 90, y: -145 });
+
+      nodes.forEach((node, index) => {
+        if (!positions.has(node.id)) {
+          positions.set(node.id, { x: 150 + (index % 4) * 150, y: 200 + Math.floor(index / 4) * 110 });
+        }
+      });
+      return positions;
     }
 
     async function request(path, options) {
@@ -530,7 +629,7 @@
       ]);
       const nodes = graph.nodes.map(node => {
         const label = nodeDisplayLabel(node);
-        return { ...node, title: String(label).slice(0, 24) };
+        return { ...node, title: String(label).slice(0, 16) };
       });
       const tasksById = new Map(
         graph.nodes.filter(node => node.label === "Task").map(node => [node.id, node])
@@ -557,9 +656,11 @@
       const nodeIdsKey = JSON.stringify(nodeIds);
       if (nodeIdsKey !== lastNodeIds) {
         cy.elements().remove();
+        const positions = calculateGraphPositions(nodes, graph.edges);
         cy.add([
           ...nodes.map(node => ({
             data: node,
+            position: positions.get(node.id),
             classes: reducedMotion ? "" : "entering"
           })),
           ...edges.map(edge => ({
@@ -568,8 +669,7 @@
           }))
         ]);
         const layout = cy.layout({
-          name: "breadthfirst", directed: true, direction: "TB",
-          padding: 28, spacingFactor: 1.1
+          name: "preset", fit: false, padding: 28
         });
         layout.one("layoutstop", () => {
           cy.fit(cy.elements(), 28);
@@ -723,4 +823,4 @@
       }
     }
     poll();
-    setInterval(poll, 2000);
+    setInterval(poll, 500);

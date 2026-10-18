@@ -3,20 +3,24 @@
 ## Before recording
 
 1. Start the local stack with `docker compose up -d --build`.
-2. Open `http://localhost:8000` in a browser and wait for the dashboard controls to appear.
-3. Use the mock provider. No external LLM key is needed; the demo only uses synthetic data and localhost services.
+2. Open [http://localhost:8000](http://localhost:8000) and sign in as `acme` with the synthetic demo password `acme-demo-2026!`.
+3. Confirm the **Mock LLM mode** badge. The default prompt is prefilled; mock planning and generated file contents are canned.
+4. Use only the localhost demo. The graph, events, artifacts, and animations are real persisted project data.
 
 ## Timed narration and clicks
 
 | Time | Exact action | Say |
 |---|---|---|
-| 0:00–0:20 | Point to the CrewGraph title, **Project** picker, graph, **Selected node**, and **Recent events** panels. | “CrewGraph demonstrates the Agent Memory and Coordination track. The graph is the shared project state: agents do not call one another directly.” |
-| 0:20–0:35 | Click **Run demo with flaw** once. Wait for the newest project to appear selected in the **Project** picker. | “I’m starting the synthetic to-do app with one deliberate backend defect. The plan and generated files are canned in mock mode, so this needs no model key.” |
-| 0:35–1:15 | Watch the graph and **Recent events** update. Point to the open red **Bug**, the debugger’s new amber **Artifact**, and the tester/security tasks as they run. | “The planner stores a dependency DAG in FalkorDB. The backend produces an API contract and code; the tester uses real HTTP requests against localhost. The empty-title response violates the contract, so the tester records a bug linked to its source artifact. The debugger writes a repaired artifact, and the security scan runs before release.” |
-| 1:15–1:35 | Click the now-green fixed **Bug** node, then click its amber repair **Artifact** node. Read a couple of key/value rows in **Selected node**. | “The bug stays connected to the artifact that exposed it, and the repair is a separate artifact linked as its fix. These are graph facts, not a status invented by the dashboard.” |
-| 1:35–1:55 | Point to the status-colored task chain and the release banner showing **Human approval is required**. | “The tester and security checks have passed, the bug is fixed, and every non-release task is done. The release gate is still blocked until a person approves.” |
-| 1:55–2:10 | Click **Approve** once. | “Approval is stored in the project graph. The orchestrator rechecks the gate before it creates and completes the release task.” |
-| 2:10–2:40 | Wait for the banner to show **Released.** and the release task to appear done; point to the persisted events. | “Now the release task is complete. The event feed records what happened, while the graph shows dependencies, artifacts, bugs, agents, and approval together.” |
-| 2:40–3:00 | Point to the selected project name and graph. Do not start another demo. | “Each project uses its own FalkorDB graph. The demo’s orchestration, atomic claims, HTTP checks, static scanner, and release gate are real; mock planning and generated file contents are intentionally canned.” |
+| 0:00–0:20 | Show the login screen, then sign in to Acme. Point to the tenant project picker and **Mock LLM mode** badge. | “This demo has two isolated tenants. Projects are stored in separate FalkorDB graphs, and the browser only receives its tenant's project list.” |
+| 0:20–0:35 | Keep the default prompt and click **Run demo with flaw**. | “The prompt is sent to the planner. In mock mode the planner and generated content use a canned plan; this secondary button enables one deliberate synthetic backend defect.” |
+| 0:35–1:05 | As real tasks become claimed, capture or point to the blue pulsing node, moving stage dot, progress bar, and latest-event caption. | “The dashboard reads persisted `/events` and graph status. A claim event drives the caption and stage transition; the claimed task is the one that pulses. Nothing in this animation is made-up demo data.” |
+| 1:05–1:25 | Watch the bug appear, then become fixed; point to the event history. | “The tester makes real HTTP requests against localhost, records the defect against its source artifact, and the debugger writes a repair artifact. The bug shakes on the real finding event and turns green when fixed.” |
+| 1:25–1:45 | Point to the output file list, artifact version and agent, then open `main.py` or `dashboard/index.html` in the read-only preview. | “These versions and producers come from graph-linked artifacts. The preview serves the corresponding registered workspace file with path checks and a size cap.” |
+| 1:45–2:00 | Click **Replay · 4×** while the graph is still selected. | “Replay reads the project's persisted event history and runs the same event-driven caption, stage-dot, and node animations at four times the event timing.” |
+| 2:00–2:15 | Wait for **Human approval is required**, then click **Approve** once. | “Approval is stored in FalkorDB. The orchestrator rechecks task completion, open bugs, and approval before creating the release task.” |
+| 2:15–2:40 | Wait for **Released** and show the finished output panel. | “The output is released only after the graph-backed release gate passes. The output view, task progress, and event timeline all reflect persisted state.” |
+| 2:40–3:00 | Optionally log out, then show the screenshots in `docs/img`. | “CrewGraph coordinates through its graph; agents never call each other directly. This is demo authentication, not production security.” |
 
-If the graph is still updating, wait for the next dashboard poll before clicking the bug or approval controls. Stop the local stack after recording with `docker compose down`.
+If a stage changes before a screenshot, start another synthetic run and capture the actual claim window. Do not inject or fabricate events. The requested captures are [login](./img/login.png), [a mid-run pulsing task](./img/mid-run.png), and [finished output](./img/finished-output.png).
+
+To verify the authenticated localhost flow from a shell, set `CREWGRAPH_USERNAME=acme` and `CREWGRAPH_PASSWORD=acme-demo-2026!`, then run `python -m scripts.check_dashboard_flow`. With `AUTH_ENABLED=false`, the script works without login credentials. For persistence, run the flow, use `docker compose down` (not `down -v`), then `docker compose up -d` and check that the same project remains listed and its generated file preview still loads from the workspace volume.

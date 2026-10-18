@@ -26,6 +26,8 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    volumes:
+      - workspace_data:/app/workspace
     environment:
       FALKORDB_HOST: falkordb
       LLM_PROVIDER: mock
@@ -47,3 +49,5 @@ services:
 volumes:
   falkordb_data:
     name: crewgraph_falkordb_data
+  workspace_data:
+    name: crewgraph_workspace_data

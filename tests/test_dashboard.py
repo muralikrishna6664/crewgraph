@@ -26,16 +26,21 @@ def test_dashboard_serves_external_dark_styles_and_script() -> None:
     assert 'new Date(timestamp).toLocaleTimeString()' in script
     assert 'content.title = String(value);' in script
     assert "Run demo with flaw" in response.text
-    assert 'name: "breadthfirst", directed: true' in script
-    assert 'direction: "TB"' in script
+    assert 'name: "preset"' in script
+    assert "calculateGraphPositions(nodes, graph.edges)" in script
+    assert 'window.addEventListener("resize"' in script
     assert 'width: 40, height: 40' in script
     assert '"text-wrap": "wrap", "text-max-width": 120, "font-size": 12' in script
     assert 'label: "data(title)"' in script
     assert 'case "Task": return properties.title || "Task";' in script
+    assert "grid-template-columns: minmax(0, 1fr)" in styles
+    assert "section, aside {" in styles
+    assert "min-width: 0;" in styles
+    assert "#graph { width: 100%; height: 100%; min-width: 0;" in styles
     assert 'case "Artifact": return properties.path || "Artifact";' in script
     assert 'case "Agent": return properties.name || "Agent";' in script
     assert 'case "Bug": return properties.title || "Bug";' in script
-    assert "String(label).slice(0, 24)" in script
+    assert "String(label).slice(0, 16)" in script
     assert 'label: ""' in script
     assert 'selector: "edge.edge-visible"' in script
     assert "nodeIdsKey !== lastNodeIds" in script

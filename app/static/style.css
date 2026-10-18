@@ -151,6 +151,7 @@ main {
 }
 
 section, aside {
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -160,7 +161,7 @@ section, aside {
 }
 
 section { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
-#graph { width: 100%; height: 100%; min-height: 250px; }
+#graph { width: 100%; height: 100%; min-width: 0; min-height: 250px; }
 
 #stage-strip {
   display: flex;
@@ -364,7 +365,7 @@ h2 { margin: 0 0 12px; color: #dfe7f2; font-size: 13px; }
   header h1 { width: 100%; }
   .prompt-bar { flex-wrap: wrap; }
   .prompt-bar label { width: 100%; }
-  main { height: auto; grid-template-columns: 1fr; }
+  main { height: auto; grid-template-columns: minmax(0, 1fr); }
   section { height: 58vh; }
   aside { height: 90vh; grid-template-rows: minmax(300px, 1.7fr) minmax(150px, .8fr) minmax(120px, .8fr); }
 }
