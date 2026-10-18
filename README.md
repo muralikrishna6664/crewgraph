@@ -201,6 +201,10 @@ The function's Python checks require the project to exist, every task to be `don
 
 ## LLM mode and synthetic agents
 
+### Project video
+
+[Watch the CrewGraph demo](https://youtu.be/sXJUd8g7dJc).
+
 The default is `LLM_PROVIDER=mock`, so the demo runs without a key or model network request. The mock planner returns a canned DAG; mock workers and debugger return canned file contents. The following parts are real application behavior: graph scheduling and atomic claims, graph-backed handoffs, real HTTP checks against the generated app on localhost, static security scanning, bug/fix links, lease recovery, human approval, and the release gate.
 
 The dashboard shows the active provider as **Mock LLM mode** or **Live LLM**. Its prompt is sent to the planner; mock mode intentionally keeps the canned DAG, while a configured live provider can produce a prompt-specific plan. The graph, recent-event caption, stage transitions, progress bar, and animations use persisted FalkorDB state and real `/events` results; replay does not synthesize events.
